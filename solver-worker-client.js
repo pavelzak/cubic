@@ -2562,6 +2562,121 @@ return { Cube, Faces, Colors, solve3, solveN, solveCenters, solveEdges, solveCor
 });
 ;
 
+// Source: center-solver.js
+/*
+ * Batched center reduction, adapted from solveCenters in vendor/nxn-solver/solver.js.
+ * Original algorithm: Chu Won, based on Vivaan Singhvi's pycubing, MIT licensed.
+ * See vendor/nxn-solver/LICENSE for the original notices.
+ */
+(function (root, factory) {
+  if (typeof module === 'object' && module.exports) {
+    module.exports = factory(require('./vendor/nxn-solver/solver.js'));
+  } else root.CubeCenterSolver = factory(root.NxNSolver);
+})(typeof self !== 'undefined' ? self : globalThis, function (vendor) {
+  'use strict';
+
+  const { Cube, Faces } = vendor;
+
+  function insertion(size, x, y, fromBack) {
+    const frontX = fromBack ? size - 1 - x : x;
+    const frontY = fromBack ? size - 1 - y : y;
+    const fixedSlice = frontX + 1;
+    const diagonal = fixedSlice === frontY + 1;
+    return {
+      frontX, frontY, fixedSlice,
+      slice: diagonal ? size - frontY : frontY + 1,
+      adjust: diagonal ? 1 : -1
+    };
+  }
+
+  function rotatedColor(face, size, y, x, turns) {
+    for (let i = 0; i < turns; i++) [y, x] = [size - 1 - x, y];
+    return face[y][x];
+  }
+
+  // For distinct insertion slices, none equal to the fixed slice, these
+  // center commutators have disjoint effects. Their product factors into one
+  // commutator with all insertion slices: k insertions cost 2k + 6, not 8k.
+  function insertBatch(cube, fixedSlice, slices, fromBack, adjust) {
+    const distance = fromBack ? -2 : -1, face = fromBack ? 'B' : 'U';
+    cube.turn('L', distance, fixedSlice, 1);
+    cube.turn(face, adjust, 1, 1);
+    for (const slice of slices) cube.turn('L', distance, slice, 1);
+    cube.turn(face, -adjust, 1, 1);
+    cube.turn('L', -distance, fixedSlice, 1);
+    cube.turn(face, adjust, 1, 1);
+    for (const slice of slices) cube.turn('L', -distance, slice, 1);
+    cube.turn(face, -adjust, 1, 1);
+  }
+
+  function chooseBatch(cube, sourceFace, targetColor, fromBack) {
+    const size = cube.size;
+    let best = null;
+    for (let x = 1; x < size - 1; x++) for (const adjust of [-1, 1]) {
+      const candidates = [];
+      for (let y = 1; y < size - 1; y++) {
+        if (cube.matrix[sourceFace][y][x] !== targetColor) continue;
+        const next = insertion(size, x, y, fromBack);
+        if (next.adjust === adjust && next.slice !== next.fixedSlice) candidates.push(next);
+      }
+      if (!candidates.length) continue;
+      for (let turns = 0; turns < 4; turns++) {
+        const selected = candidates.filter(next =>
+          rotatedColor(cube.matrix[Faces.Front], size, next.frontY, next.frontX, turns) !== targetColor);
+        const cost = selected.length * 2 + 6 + (turns ? 1 : 0);
+        const score = selected.length / cost;
+        if (selected.length && (!best || score > best.score)) best = { selected, turns, score };
+      }
+    }
+    return best;
+  }
+
+  function solve(cube) {
+    const size = cube.size;
+    if (!Number.isInteger(size) || size < 4 || size > 10) {
+      throw new Error('Batched center solving supports 4×4 through 10×10.');
+    }
+    const reference = new Cube(1), solvedColors = new Set();
+    if (size % 2) {
+      const middle = Math.floor(size / 2);
+      for (let face = 0; face < Faces.length; face++) {
+        reference.matrix[face][0][0] = cube.matrix[face][middle][middle];
+      }
+    }
+    for (const orientation of ['', 'y', 'y', 'y', 'x', 'x2']) {
+      cube.parse(orientation);
+      reference.parse(orientation);
+      const targetColor = reference.matrix[Faces.Front][0][0];
+      for (let source = 0; source < 5; source++) {
+        if (source < 4) {
+          cube.turn('B', 1, size - 1, size - 1);
+          reference.turn('B', 1, 1, 1);
+        }
+        const fromBack = source === 4, sourceFace = fromBack ? Faces.Back : Faces.Top;
+        if (solvedColors.has(cube.matrix[sourceFace][1][1])) continue;
+        // Each batch fills previously incorrect slots without removing any
+        // solved target centers, so at most (size - 2)^2 batches are needed.
+        for (let count = 0; count < (size - 2) ** 2; count++) {
+          const batch = chooseBatch(cube, sourceFace, targetColor, fromBack);
+          if (!batch) break;
+          if (batch.turns) cube.turn('F', batch.turns, 1, 1);
+          const first = batch.selected[0];
+          insertBatch(cube, first.fixedSlice, batch.selected.map(next => next.slice), fromBack, first.adjust);
+        }
+      }
+      for (let y = 1; y < size - 1; y++) for (let x = 1; x < size - 1; x++) {
+        if (cube.matrix[Faces.Front][y][x] !== targetColor) {
+          throw new Error('Batched center solving did not finish a face.');
+        }
+      }
+      solvedColors.add(targetColor);
+    }
+  }
+
+  return { solve, insertBatch };
+});
+;
+
 // Source: vendor/cubejs/cube.js
 (function() {
   // Centers
@@ -4603,22 +4718,15 @@ return { Cube, Faces, Colors, solve3, solveN, solveCenters, solveEdges, solveCor
 }).call(this);
 ;
 
-// Source: short-solver.js
+// Source: move-optimizer.js
 (function (root, factory) {
-  if (typeof module === 'object' && module.exports) {
-    module.exports = factory(require('./vendor/nxn-solver/solver.js'), require('./layer-solver.js'),
-      require('./solver-engine.js'), function () { return require('./vendor/cubejs/cube.js'); });
-  } else {
-    root.CubeShortSolver = factory(root.NxNSolver, root.CubeLayerSolver, root.CubeSolverEngine,
-      function () { return root.Cube; });
-  }
-})(typeof self !== 'undefined' ? self : globalThis, function (vendor, layerSolver, adapter, getCube) {
+  if (typeof module === 'object' && module.exports) module.exports = factory();
+  else root.CubeMoveOptimizer = factory();
+})(typeof self !== 'undefined' ? self : globalThis, function () {
 'use strict';
 
-const faces = 'FLBRUD';
 const axes = ['R', 'U', 'F'];
 const opposite = { R: 'L', U: 'D', F: 'B' };
-const shortTables = new Map();
 const mod4 = n => ((n % 4) + 4) % 4;
 const dot = (a, b) => a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
 
@@ -4695,78 +4803,202 @@ function optimize(moves, size, model) {
   return current;
 }
 
-function solves(state, moves, model) {
-  try { adapter.verifySolution(state, moves, model); return true; }
-  catch (_) { return false; }
+return { optimize };
+});
+;
+
+// Source: shallow-solver.js
+(function (root, factory) {
+  if (typeof module === 'object' && module.exports) module.exports = factory();
+  else root.CubeShallowSolver = factory();
+})(typeof self !== 'undefined' ? self : globalThis, function () {
+'use strict';
+
+const faces = 'FLBRUD';
+const axes = ['R', 'U', 'F'];
+const opposites = ['L', 'D', 'B'];
+// The small one-turn tables cover at most the nine supported cube sizes.
+const oneTurnTables = new Map();
+// Retain only one larger two-turn table across cube-size changes.
+let twoTurnTable = null;
+
+function nearestMove(axis, depth, n, size) {
+  if (depth <= (size - 1) / 2) return { face: axes[axis], depth, n };
+  return { face: opposites[axis], depth: size - depth - 1, n: 4 - n };
 }
 
-// Color names do not change the move needed to solve a sticker pattern.
-// This also recognizes uniformly solved cubes in any final orientation.
-function patternKey(state, model) {
-  const matrix = layerSolver.toCube(state, model).matrix;
-  const colors = new Map();
-  let key = '';
-  for (const face of matrix) for (const row of face) for (const color of row) {
-    if (!colors.has(color)) colors.set(color, colors.size);
-    key += colors.get(color);
-  }
-  return key;
-}
+function inverse(move) { return { face: move.face, depth: move.depth, n: 4 - move.n }; }
 
-function shortSolution(state, size, model) {
-  let table = shortTables.get(size);
-  if (!table) {
-    const moves = [], states = new Map(), solved = model.solvedState(size);
-    for (let axis = 0; axis < 3; axis++) for (let depth = 0; depth < size; depth++) {
-      for (let n = 1; n <= 3; n++) {
-        const move = nearestMove(axis, depth, n, size), next = model.cloneState(solved);
-        moves.push(move);
-        model.applyMove(next, move.face, move.n, move.depth);
-        states.set(patternKey(next, model), { face: move.face, depth: move.depth, n: 4 - move.n });
+// Normalize color names, since the same turn sequence solves a recolored
+// sticker pattern too. Five three-bit colors fit in each UTF-16 character.
+// Flat packed keys bound the large table's sticker payload to about 1.6 MB
+// for 10×10, instead of retaining thousands of long concatenated strings.
+function patternKey(state, size, validate = false) {
+  const area = size * size, stickers = Array(6 * area), h = (size - 1) / 2;
+  for (const cubie of state) {
+    const [x, y, z] = cubie.p;
+    for (const face of Object.keys(cubie.s)) {
+      let row, col;
+      switch (face) {
+        case 'F': row = h - y; col = x + h; break;
+        case 'L': row = h - y; col = z + h; break;
+        case 'B': row = h - y; col = h - x; break;
+        case 'R': row = h - y; col = h - z; break;
+        case 'U': row = z + h; col = x + h; break;
+        case 'D': row = h - z; col = x + h; break;
+        default: throw new Error('Invalid cube sticker face.');
       }
-    }
-    table = { moves, states };
-    shortTables.set(size, table);
-  }
-  let best = null;
-  for (const move of table.moves) {
-    const next = model.cloneState(state);
-    model.applyMove(next, move.face, move.n, move.depth);
-    if (model.isSolved(next)) return [move];
-    const final = table.states.get(patternKey(next, model));
-    if (final && !best) {
-      const candidate = optimize([move, final], size, model);
-      if (solves(state, candidate, model)) best = candidate;
+      const index = faces.indexOf(face) * area + row * size + col;
+      if (validate && (!Number.isInteger(row) || !Number.isInteger(col) ||
+          row < 0 || row >= size || col < 0 || col >= size ||
+          ({ F: z, B: -z, L: -x, R: x, U: y, D: -y })[face] !== h ||
+          stickers[index] !== undefined)) throw new Error('Invalid cube sticker position.');
+      stickers[index] = cubie.s[face];
     }
   }
-  return best;
+  const colors = new Map(), counts = [], packed = [];
+  let bits = 0;
+  for (let i = 0; i < stickers.length; i++) {
+    const color = stickers[i];
+    if (color === undefined) throw new Error('Incomplete cube sticker state.');
+    if (!colors.has(color)) colors.set(color, colors.size);
+    const colorIndex = colors.get(color);
+    if (validate) counts[colorIndex] = (counts[colorIndex] || 0) + 1;
+    bits = (bits << 3) | colorIndex;
+    if (i % 5 === 4 || i === stickers.length - 1) { packed.push(bits); bits = 0; }
+  }
+  if (validate && (counts.length !== 6 || counts.some(count => count !== area))) {
+    throw new Error('Invalid cube sticker colors.');
+  }
+  return String.fromCharCode(...packed);
 }
 
-function threeTurnSolution(state, size, model) {
-  // The one-turn goal table was populated by shortSolution. Meet it with
-  // two turns from the current state instead of generating all three plies.
-  const table = shortTables.get(size);
-  const candidates = table.moves.map(move => {
-    const normal = model.N[move.face], axis = normal.findIndex(value => value !== 0);
-    return { move, axis, depth: normal[axis] > 0 ? move.depth : size - move.depth - 1 };
-  });
-  for (const first of candidates) {
-    const prefix = model.cloneState(state), a = first.move;
+function verify(state, moves, model) {
+  const replay = model.cloneState(state);
+  for (const move of moves) model.applyMove(replay, move.face, move.n, move.depth);
+  return model.isSolved(replay);
+}
+
+function oneTurnTable(size, model) {
+  let table = oneTurnTables.get(size);
+  if (table) return table;
+  const moves = [], states = new Map(), solved = model.solvedState(size);
+  for (let axis = 0; axis < 3; axis++) for (let depth = 0; depth < size; depth++) {
+    for (let n = 1; n <= 3; n++) {
+      const move = nearestMove(axis, depth, n, size), state = model.cloneState(solved);
+      const index = moves.length;
+      moves.push({ move, axis, depth });
+      model.applyMove(state, move.face, move.n, move.depth);
+      states.set(patternKey(state, size), index);
+    }
+  }
+  table = { moves, states };
+  oneTurnTables.set(size, table);
+  return table;
+}
+
+function visitPairs(state, size, table, model, visit) {
+  for (let i = 0; i < table.moves.length; i++) {
+    const first = table.moves[i], prefix = model.cloneState(state), a = first.move;
     model.applyMove(prefix, a.face, a.n, a.depth);
-    for (const second of candidates) {
-      // Same-layer turns combine; different parallel layers commute, so
-      // keep one ordering while preserving genuine three-layer solutions.
+    for (let j = 0; j < table.moves.length; j++) {
+      const second = table.moves[j];
+      // Same-layer turns combine; distinct parallel layers commute, so one
+      // ordering suffices without dropping genuine multi-layer solutions.
       if (first.axis === second.axis && second.depth <= first.depth) continue;
       const next = model.cloneState(prefix), b = second.move;
       model.applyMove(next, b.face, b.n, b.depth);
-      const final = table.states.get(patternKey(next, model));
-      if (final) {
-        const result = optimize([a, b, final], size, model);
-        if (solves(state, result, model)) return result;
-      }
+      const result = visit(patternKey(next, size), i, j);
+      if (result) return result;
     }
   }
   return null;
+}
+
+function search(state, model, maxDepth) {
+  const size = model.cubeSize(state);
+  if (!Number.isInteger(size) || size < 2 || size > 10) throw new Error('Shallow search supports sizes 2 through 10.');
+  if (!Number.isInteger(maxDepth) || maxDepth < 1 || maxDepth > 4) throw new Error('Shallow search depth must be from 1 to 4.');
+  patternKey(state, size, true);
+  if (model.isSolved(state)) return [];
+  const table = oneTurnTable(size, model), count = table.moves.length;
+  let best = null;
+  for (const { move } of table.moves) {
+    const next = model.cloneState(state);
+    model.applyMove(next, move.face, move.n, move.depth);
+    if (model.isSolved(next)) return [move];
+    if (maxDepth > 1 && !best) {
+      const last = table.states.get(patternKey(next, size));
+      if (last !== undefined) {
+        const candidate = [move, inverse(table.moves[last].move)];
+        if (verify(state, candidate, model)) best = candidate;
+      }
+    }
+  }
+  if (best || maxDepth < 3) return best;
+
+  // Keep the current two-turn frontier only when a fourth turn is allowed.
+  // Reuse it after the three-turn check instead of scanning the same states twice.
+  const frontier = maxDepth === 4 ? new Map() : null;
+  const three = visitPairs(state, size, table, model, (key, first, second) => {
+    const last = table.states.get(key);
+    if (last !== undefined) {
+      const candidate = [table.moves[first].move, table.moves[second].move, inverse(table.moves[last].move)];
+      if (verify(state, candidate, model)) return candidate;
+    }
+    if (frontier) frontier.set(key, first * count + second);
+    return null;
+  });
+  if (three || !frontier) return three;
+
+  if (!twoTurnTable || twoTurnTable.size !== size) {
+    // Drop the previous size before constructing its replacement.
+    twoTurnTable = null;
+    const states = new Map(), solved = model.solvedState(size);
+    visitPairs(solved, size, table, model, (key, first, second) => {
+      states.set(key, first * count + second);
+    });
+    twoTurnTable = { size, states };
+  }
+  for (const [key, start] of frontier) {
+    const end = twoTurnTable.states.get(key);
+    if (end === undefined) continue;
+    const candidate = [table.moves[Math.floor(start / count)].move, table.moves[start % count].move,
+      inverse(table.moves[end % count].move), inverse(table.moves[Math.floor(end / count)].move)];
+    if (verify(state, candidate, model)) return candidate;
+  }
+  return null;
+}
+
+function find(state, model, maxDepth = 2) {
+  const moves = search(state, model, maxDepth);
+  // Callers may annotate or otherwise edit moves; never expose cached objects.
+  return moves && moves.map(move => ({ ...move }));
+}
+
+return { find };
+});
+;
+
+// Source: short-solver.js
+(function (root, factory) {
+  if (typeof module === 'object' && module.exports) {
+    module.exports = factory(require('./vendor/nxn-solver/solver.js'), require('./layer-solver.js'),
+      require('./solver-engine.js'), require('./shallow-solver.js'), require('./move-optimizer.js'),
+      require('./center-solver.js'), function () { return require('./vendor/cubejs/cube.js'); });
+  } else {
+    root.CubeShortSolver = factory(root.NxNSolver, root.CubeLayerSolver, root.CubeSolverEngine, root.CubeShallowSolver, root.CubeMoveOptimizer,
+      root.CubeCenterSolver, function () { return root.Cube; });
+  }
+})(typeof self !== 'undefined' ? self : globalThis, function (vendor, layerSolver, adapter, shallowSolver, moveOptimizer, centerSolver, getCube) {
+'use strict';
+
+const faces = 'FLBRUD';
+const optimize = moveOptimizer.optimize;
+
+function solves(state, moves, model) {
+  try { adapter.verifySolution(state, moves, model); return true; }
+  catch (_) { return false; }
 }
 
 function reducedState(cube, model) {
@@ -4860,12 +5092,8 @@ function solveWithOptions(state, model, nearOptimalEngine, onProgress, deep) {
   if (model.isSolved(state)) return [];
   onProgress = onProgress || function () {};
   onProgress('Checking for a short solution…');
-  const short = shortSolution(state, size, model);
+  const short = shallowSolver.find(state, model, deep ? 4 : 2);
   if (short) return short;
-  if (deep) {
-    const three = threeTurnSolution(state, size, model);
-    if (three) return three;
-  }
 
   onProgress('Building and simplifying a reduction solution…');
   let best = optimize(layerSolver.solve(state, model), size, model);
@@ -4874,7 +5102,10 @@ function solveWithOptions(state, model, nearOptimalEngine, onProgress, deep) {
   // Keep a verified result before searching alternative reduction orders.
   // Worker termination remains immediate if the user presses Stop.
   const deadline = Date.now() + (deep ? 10000 : 2000);
-  const plans = searchPlans(size, deep), finishCache = deep ? new Map() : null;
+  // Interleave both center methods so neither depends on a long search
+  // finishing every orientation. Keep the same overall time budget.
+  const plans = searchPlans(size, deep).flatMap(plan => [plan, { ...plan, batchCenters: true }]);
+  const finishCache = deep ? new Map() : null;
   for (let attempt = 0; attempt < plans.length && Date.now() < deadline; attempt++) {
     onProgress((deep ? 'Deep search: comparing reductions (' : 'Comparing shorter reductions (') +
       (attempt + 1) + '/' + plans.length + ')…');
@@ -4896,7 +5127,8 @@ function solveWithOptions(state, model, nearOptimalEngine, onProgress, deep) {
       }
       if (plan.setup) cube.turn(plan.setup[0], plan.setup[1], 1, 1);
       for (const [face, n] of plan.turns) cube.turn(face, n, size, size);
-      vendor.solveCenters(cube);
+      if (plan.batchCenters) centerSolver.solve(cube);
+      else vendor.solveCenters(cube);
       vendor.solveEdges(cube);
       let reduced = reducedState(cube, model);
       if (reductionParity(reduced, model)) {
@@ -8031,9 +8263,10 @@ return { reduce, applyMove, isInitialized: function () { return inited_2; } };
 
 // Source: four-solver.js
 (function (root, factory) {
-  if (typeof module === 'object' && module.exports) module.exports = factory(require('./vendor/four-solver/solver.js'));
-  else root.CubeFourSolver = factory(root.CubeFourReduction);
-})(typeof self !== 'undefined' ? self : globalThis, function (reduction) {
+  if (typeof module === 'object' && module.exports) {
+    module.exports = factory(require('./vendor/four-solver/solver.js'), require('./move-optimizer.js'), require('./shallow-solver.js'));
+  } else root.CubeFourSolver = factory(root.CubeFourReduction, root.CubeMoveOptimizer, root.CubeShallowSolver);
+})(typeof self !== 'undefined' ? self : globalThis, function (reduction, moveOptimizer, shallowSolver) {
 'use strict';
 
 // Facelet layouts from the MIT-licensed TPR FullCube.java (see vendor README).
@@ -8044,7 +8277,6 @@ const CORNERS = [[15, 16, 35], [12, 32, 67], [0, 64, 83], [3, 80, 19], [51, 47, 
 const WINGS = [[13, 33], [4, 65], [2, 81], [11, 17], [61, 94], [52, 78], [50, 46], [59, 30], [75, 40], [68, 87], [27, 88], [20, 39], [34, 14], [66, 8], [82, 1], [18, 7], [93, 62], [77, 56], [45, 49], [29, 55], [36, 71], [91, 72], [84, 23], [43, 24]];
 const CORNER_FACES = ['URF', 'UFL', 'ULB', 'UBR', 'DFR', 'DLF', 'DBL', 'DRB'];
 const EDGE_FACES = ['UR', 'UF', 'UL', 'UB', 'DR', 'DF', 'DL', 'DB', 'FR', 'FL', 'BL', 'BR'];
-let shortTable = null;
 
 function invalid() { throw new Error('Invalid 4×4 cube state.'); }
 
@@ -8122,35 +8354,6 @@ function replay(state, moves, model) {
   return result;
 }
 
-function patternKey(state, model) {
-  const colors = new Map();
-  return facelets(state, model).map(color => {
-    if (!colors.has(color)) colors.set(color, colors.size);
-    return colors.get(color);
-  }).join('');
-}
-
-// Bidirectional depth 1 + 1, including every individual slice. No move log is used.
-function shortSolution(state, model) {
-  if (!shortTable) {
-    const moves = [], inverse = new Map(), solved = model.solvedState(4);
-    for (const face of 'URF') for (let depth = 0; depth < 4; depth++) for (let n = 1; n <= 3; n++) {
-      const move = { face, depth, n }, next = replay(solved, [move], model);
-      moves.push(move);
-      inverse.set(patternKey(next, model), { face, depth, n: 4 - n });
-    }
-    shortTable = { moves, inverse };
-  }
-  let best = null;
-  for (const move of shortTable.moves) {
-    const next = replay(state, [move], model);
-    if (model.isSolved(next)) return [move];
-    const final = shortTable.inverse.get(patternKey(next, model));
-    if (!best && final && model.isSolved(replay(next, [final], model))) best = [move, final];
-  }
-  return best;
-}
-
 function reducedState(state, model) {
   const f = facelets(state, model);
   for (let face = 0; face < 6; face++) {
@@ -8205,18 +8408,10 @@ function canFinish(state, model) {
   return twist % 3 === 0 && flip % 2 === 0 && permutationParity(cp) === permutationParity(ep);
 }
 
-function solve(state, model, nearOptimalEngine, onProgress) {
-  const pieces = toPieces(state, model);
-  if (model.isSolved(state)) return [];
-  onProgress = onProgress || function () {};
-  onProgress('4×4: checking for a short solution…');
-  const short = shortSolution(state, model);
-  if (short) return short;
-  if (!nearOptimalEngine || typeof nearOptimalEngine.solveNearOptimal !== 'function') {
-    throw new Error('The three-phase solver needs the 3×3 finishing engine.');
-  }
-  let reduced = reducedState(state, model), moves = [];
+function completeSolution(state, pieces, model, nearOptimalEngine, onProgress) {
+  let reduced = reducedState(state, model), moves = [], searched = false;
   if (!reduced || !canFinish(reduced, model)) {
+    searched = true;
     moves = expandMoves(reduction.reduce(pieces, onProgress));
     reduced = reducedState(replay(state, moves, model), model);
     if (!reduced || !canFinish(reduced, model)) throw new Error('The three-phase reduction did not finish.');
@@ -8225,8 +8420,55 @@ function solve(state, model, nearOptimalEngine, onProgress) {
   const finish = nearOptimalEngine.solveNearOptimal(reduced, onProgress);
   if (!Array.isArray(finish)) throw new Error('Invalid three-phase finishing moves.');
   moves = model.tidy(moves.concat(finish));
+  return { moves, searched };
+}
+
+function optimizeVerified(state, moves, model) {
   if (!model.isSolved(replay(state, moves, model))) throw new Error('The three-phase solution failed verification.');
+  try {
+    // Native wide turns cost one during reduction, but animate as two slices.
+    // Rank the final sequence in the same individual-slice metric the UI uses.
+    const optimized = moveOptimizer.optimize(moves, 4, model);
+    if (optimized.length <= moves.length && model.isSolved(replay(state, optimized, model))) return optimized;
+  } catch (_) { /* An optional simplification cannot discard a verified solve. */ }
   return moves;
+}
+
+function solve(state, model, nearOptimalEngine, onProgress) {
+  const pieces = toPieces(state, model);
+  if (model.isSolved(state)) return [];
+  onProgress = onProgress || function () {};
+  onProgress('4×4: checking for a short solution…');
+  const short = shallowSolver.find(state, model, 4);
+  if (short) return short;
+  if (!nearOptimalEngine || typeof nearOptimalEngine.solveNearOptimal !== 'function') {
+    throw new Error('The three-phase solver needs the 3×3 finishing engine.');
+  }
+
+  // Establish a complete verified answer before spending time on alternatives.
+  // An already-reduced cube keeps the inexpensive 3×3 finishing path.
+  const first = completeSolution(state, pieces, model, nearOptimalEngine, onProgress);
+  let best = optimizeVerified(state, first.moves, model);
+  if (!first.searched) return best;
+
+  const deadline = Date.now() + 5000;
+  const orientations = [['R', 1], ['R', 2], ['R', 3], ['F', 1], ['F', 3]];
+  for (let attempt = 0; attempt < orientations.length && Date.now() < deadline; attempt++) {
+    onProgress('4×4: comparing complete solutions (' + (attempt + 2) + '/6)…');
+    try {
+      const [face, n] = orientations[attempt];
+      const setup = [0, 1, 2, 3].map(depth => ({ face, n, depth }));
+      const rotated = replay(state, setup, model);
+      const result = completeSolution(rotated, toPieces(rotated, model), model, nearOptimalEngine, onProgress);
+      // The optimizer carries these setup rotations in its frame. Replaying
+      // the whole candidate on the original input checks that mapping too.
+      const candidate = optimizeVerified(state, setup.concat(result.moves), model);
+      if (candidate.length < best.length) best = candidate;
+    } catch (_) { /* Keep the verified answer if an alternative fails. */ }
+    // A candidate already in progress may finish past the comparison budget.
+    // Stop remains immediate because the entire search runs in the worker.
+  }
+  return best;
 }
 
 return { solve, toPieces, expandMoves, reducedState, canFinish };
@@ -8240,15 +8482,22 @@ if (typeof CubeModel === 'undefined') importScripts('cube-model.js');
 if (typeof CubeSolverEngine === 'undefined') importScripts('solver-engine.js');
 
 var nearOptimalEngine = null;
-var twoSolverLoaded = false;
-var largeSolverLoaded = false;
-
 function loadLargeSolver() {
-  if (!largeSolverLoaded) {
-    if (typeof NxNSolver === 'undefined') importScripts('vendor/nxn-solver/solver.js');
-    if (typeof CubeLayerSolver === 'undefined') importScripts('layer-solver.js');
-    largeSolverLoaded = true;
-  }
+  if (typeof NxNSolver === 'undefined') importScripts('vendor/nxn-solver/solver.js');
+  if (typeof CubeLayerSolver === 'undefined') importScripts('layer-solver.js');
+}
+
+function loadShortSolver() {
+  loadLargeSolver();
+  loadSharedSearch();
+  if (typeof CubeCenterSolver === 'undefined') importScripts('center-solver.js');
+  if (typeof CubeShortSolver === 'undefined') importScripts('short-solver.js');
+  return CubeShortSolver;
+}
+
+function loadSharedSearch() {
+  if (typeof CubeMoveOptimizer === 'undefined') importScripts('move-optimizer.js');
+  if (typeof CubeShallowSolver === 'undefined') importScripts('shallow-solver.js');
 }
 
 function loadNearOptimalEngine(progress) {
@@ -8271,10 +8520,7 @@ self.onmessage = function (event) {
     var moves;
     if (request.mode === 'layer') {
       if (size === 2) {
-        if (!twoSolverLoaded) {
-          if (typeof CubeTwoSolver === 'undefined') importScripts('two-solver.js');
-          twoSolverLoaded = true;
-        }
+        if (typeof CubeTwoSolver === 'undefined') importScripts('two-solver.js');
         moves = CubeTwoSolver.solve(request.state, CubeModel, progress);
       } else if (size === 3) {
         progress('Working out a layer-by-layer solution…');
@@ -8290,17 +8536,14 @@ self.onmessage = function (event) {
       } else if (size === 3) {
         moves = loadNearOptimalEngine(progress).solveNearOptimal(request.state, progress);
       } else {
-        loadLargeSolver();
-        if (typeof CubeShortSolver === 'undefined') importScripts('short-solver.js');
-        moves = CubeShortSolver.solve(request.state, CubeModel, loadNearOptimalEngine(progress), progress);
+        moves = loadShortSolver().solve(request.state, CubeModel, loadNearOptimalEngine(progress), progress);
       }
     } else if (request.mode === 'deep') {
       if (size < 4 || size > 10) throw new Error('Deep search supports 4×4 through 10×10.');
-      loadLargeSolver();
-      if (typeof CubeShortSolver === 'undefined') importScripts('short-solver.js');
-      moves = CubeShortSolver.solveDeep(request.state, CubeModel, loadNearOptimalEngine(progress), progress);
+      moves = loadShortSolver().solveDeep(request.state, CubeModel, loadNearOptimalEngine(progress), progress);
     } else if (request.mode === 'three-phase') {
       if (size !== 4) throw new Error('Three-phase solving supports 4×4 only.');
+      loadSharedSearch();
       if (typeof CubeFourReduction === 'undefined') importScripts('vendor/four-solver/solver.js');
       if (typeof CubeFourSolver === 'undefined') importScripts('four-solver.js');
       moves = CubeFourSolver.solve(request.state, CubeModel, loadNearOptimalEngine(progress), progress);

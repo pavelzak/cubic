@@ -136,7 +136,7 @@ test('verification rejects incorrect or malformed solutions', () => {
   assert.doesNotThrow(() => adapter.verifySolution(inner, [{ face: 'R', n: 3, depth: 2 }], model));
 });
 
-test('worker routes solver modes, loads vendors lazily, and preserves request IDs', () => {
+function workerHarness() {
   const root = path.resolve(__dirname, '..');
   const messages = [];
   const imports = [];
@@ -150,6 +150,11 @@ test('worker routes solver modes, loads vendors lazily, and preserves request ID
     }
   };
   vm.runInContext(fs.readFileSync(path.join(root, 'solver-worker.js'), 'utf8'), context);
+  return { context, messages, imports };
+}
+
+test('worker routes solver modes, loads vendors lazily, and preserves request IDs', () => {
+  const { context, messages, imports } = workerHarness();
   assert.equal(imports.some(filename => filename.includes('vendor')), false);
   const state = scramble('D L2');
   context.onmessage({ data: { id: 17, mode: 'layer', state } });
@@ -234,4 +239,21 @@ test('worker routes solver modes, loads vendors lazily, and preserves request ID
     assert.equal(result.type, 'error');
     assert.match(result.message, /supports/);
   }
+});
+
+test('a fresh three-phase worker loads only its own engines and shared helpers', () => {
+  const { context, messages, imports } = workerHarness();
+  const state = model.solvedState(4);
+  model.applySeq(state, "R U2 F B R B2 R U2 L B2 R U' D' R2 F R' L B2 U2 F2");
+  model.applyMove(state, 'R', 1, 1);
+  context.onmessage({ data: { id: 'four-first', mode: 'three-phase', state } });
+  const result = messages.at(-1);
+  assert.equal(result.type, 'result', result.message);
+  replay(state, result.moves);
+  for (const helper of ['shallow-solver.js', 'move-optimizer.js', 'four-solver.js']) {
+    assert.equal(imports.filter(file => file === helper).length, 1);
+  }
+  assert(!imports.includes('vendor/nxn-solver/solver.js'));
+  assert(!imports.includes('short-solver.js'));
+  assert(!imports.includes('center-solver.js'));
 });

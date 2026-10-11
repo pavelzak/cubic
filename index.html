@@ -206,17 +206,17 @@
       Drag a slice to turn it, or the background to look around. Notation stays fixed when you rotate the view.
     </p>
   </div>
-  <footer class="version" aria-label="Application version">v1.5.0</footer>
+  <footer class="version" aria-label="Application version">v1.6.0</footer>
 </div>
 
 <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
-<script src="cube-model.js?v=1.5.0"></script>
-<script src="solver-worker-client.js?v=1.5.0"></script>
+<script src="cube-model.js?v=1.6.0"></script>
+<script src="solver-worker-client.js?v=1.6.0"></script>
 <script>
 (function () {
 'use strict';
 
-const { N, solvedState, cloneState, applyRot, applyMove, isSolved: isSolvedState } = CubeModel;
+const { FACES, N, solvedState, cloneState, applyRot, applyMove, moveName, isSolved: isSolvedState } = CubeModel;
 
 /* ================= 3d scene ================= */
 if (typeof THREE === 'undefined') {
@@ -345,7 +345,7 @@ function runTurn(mv, done) {
   for (var i = 0; i < state.length; i++) {
     var c = state[i];
     if (c.p[0] * mv.axis[0] + c.p[1] * mv.axis[1] + c.p[2] * mv.axis[2] === mv.layer) {
-      group.push(c.id);
+      group.push(c);
       pivot.attach(meshes[c.id]);
     }
   }
@@ -360,9 +360,9 @@ function runTurn(mv, done) {
     if (k < 1) { requestAnimationFrame(step); return; }
     applyRot(state, mv.axis, mv.layer, mv.n);
     for (var j = 0; j < group.length; j++) {
-      var id = group[j];
-      cube.attach(meshes[id]);
-      for (var q = 0; q < state.length; q++) if (state[q].id === id) snap(meshes[id], state[q]);
+      var cubie = group[j], mesh = meshes[cubie.id];
+      cube.attach(mesh);
+      snap(mesh, cubie);
     }
     cube.remove(pivot);
     invalidate();
@@ -378,10 +378,9 @@ var onIdle = null;
 function faceMove(face, n, depth) {
   depth = depth || 0;
   var turns = ((n % 4) + 4) % 4;
-  return {
-    face: face, depth: depth, axis: N[face], layer: (size - 1) / 2 - depth, n: turns,
-    name: (depth ? depth + 1 : '') + face + (turns === 1 ? '' : turns === 2 ? '2' : "'")
-  };
+  var move = { face: face, depth: depth, axis: N[face], layer: (size - 1) / 2 - depth, n: turns };
+  move.name = moveName(move);
+  return move;
 }
 function selectedDepth() { return Number(layerDepth.value); }
 
@@ -533,17 +532,17 @@ renderHistory();
 /* ---- actions ---- */
 function userTurn(mv) {
   if (busy || running || queue.length) return;
-  if (!timing && !isSolved()) startTimer();
+  if (!timing) startTimer();
   enqueue([mv]);
 }
 
 btnScramble.addEventListener('click', function () {
   if (busy) return;
   clearQueue();
-  var faces = ['U', 'D', 'L', 'R', 'F', 'B'], list = [], last = '';
+  var list = [], last = '';
   var count = size === 2 ? 15 : size === 3 ? 25 : size * 10;
   for (var i = 0; i < count; i++) {
-    var f; do { f = faces[Math.floor(Math.random() * 6)]; } while (f === last);
+    var f; do { f = FACES[Math.floor(Math.random() * FACES.length)]; } while (f === last);
     last = f;
     var n = 1 + Math.floor(Math.random() * 3);
     var depth = size === 3 ? 0 : Math.floor(Math.random() * Math.ceil(size / 2));
@@ -732,7 +731,7 @@ function resetPuzzle() {
 
 /* ---- keypad ---- */
 var keysEl = document.getElementById('keys');
-['U', 'D', 'L', 'R', 'F', 'B'].forEach(function (f) {
+FACES.forEach(function (f) {
   [[1, f], [3, f + "'"]].forEach(function (pair) {
     var b = document.createElement('button');
     b.textContent = pair[1];
@@ -744,7 +743,7 @@ var keysEl = document.getElementById('keys');
 window.addEventListener('keydown', function (e) {
   if (e.metaKey || e.ctrlKey || e.altKey) return;
   var f = e.key.toUpperCase();
-  if (['U', 'D', 'L', 'R', 'F', 'B'].indexOf(f) < 0) return;
+  if (FACES.indexOf(f) < 0) return;
   if (document.activeElement && /^(INPUT|SELECT|TEXTAREA)$/.test(document.activeElement.tagName)) return;
   e.preventDefault();
   userTurn(faceMove(f, e.shiftKey ? 3 : 1, selectedDepth()));
@@ -804,7 +803,7 @@ stage.addEventListener('pointermove', function (ev) {
   var origin = toScreen(drag.point);
   var best = null, bestScore = -2;
   var axes = [[1,0,0], [-1,0,0], [0,1,0], [0,-1,0], [0,0,1], [0,0,-1]];
-  for (var i = 0; i < axes.length; i++) {  
+  for (var i = 0; i < axes.length; i++) {
     var w = new THREE.Vector3(axes[i][0], axes[i][1], axes[i][2]);
     if (Math.abs(w.dot(drag.n)) > 0.5) continue;             // must lie in the grabbed face
     var tip = drag.point.clone().add(w.clone().applyQuaternion(cube.quaternion).multiplyScalar(0.45 * cube.scale.x));

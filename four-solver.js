@@ -1,7 +1,8 @@
 (function (root, factory) {
-  if (typeof module === 'object' && module.exports) module.exports = factory(require('./vendor/four-solver/solver.js'));
-  else root.CubeFourSolver = factory(root.CubeFourReduction);
-})(typeof self !== 'undefined' ? self : globalThis, function (reduction) {
+  if (typeof module === 'object' && module.exports) {
+    module.exports = factory(require('./vendor/four-solver/solver.js'), require('./move-optimizer.js'), require('./shallow-solver.js'));
+  } else root.CubeFourSolver = factory(root.CubeFourReduction, root.CubeMoveOptimizer, root.CubeShallowSolver);
+})(typeof self !== 'undefined' ? self : globalThis, function (reduction, moveOptimizer, shallowSolver) {
 'use strict';
 
 // Facelet layouts from the MIT-licensed TPR FullCube.java (see vendor README).
@@ -12,7 +13,6 @@ const CORNERS = [[15, 16, 35], [12, 32, 67], [0, 64, 83], [3, 80, 19], [51, 47, 
 const WINGS = [[13, 33], [4, 65], [2, 81], [11, 17], [61, 94], [52, 78], [50, 46], [59, 30], [75, 40], [68, 87], [27, 88], [20, 39], [34, 14], [66, 8], [82, 1], [18, 7], [93, 62], [77, 56], [45, 49], [29, 55], [36, 71], [91, 72], [84, 23], [43, 24]];
 const CORNER_FACES = ['URF', 'UFL', 'ULB', 'UBR', 'DFR', 'DLF', 'DBL', 'DRB'];
 const EDGE_FACES = ['UR', 'UF', 'UL', 'UB', 'DR', 'DF', 'DL', 'DB', 'FR', 'FL', 'BL', 'BR'];
-let shortTable = null;
 
 function invalid() { throw new Error('Invalid 4×4 cube state.'); }
 
@@ -90,35 +90,6 @@ function replay(state, moves, model) {
   return result;
 }
 
-function patternKey(state, model) {
-  const colors = new Map();
-  return facelets(state, model).map(color => {
-    if (!colors.has(color)) colors.set(color, colors.size);
-    return colors.get(color);
-  }).join('');
-}
-
-// Bidirectional depth 1 + 1, including every individual slice. No move log is used.
-function shortSolution(state, model) {
-  if (!shortTable) {
-    const moves = [], inverse = new Map(), solved = model.solvedState(4);
-    for (const face of 'URF') for (let depth = 0; depth < 4; depth++) for (let n = 1; n <= 3; n++) {
-      const move = { face, depth, n }, next = replay(solved, [move], model);
-      moves.push(move);
-      inverse.set(patternKey(next, model), { face, depth, n: 4 - n });
-    }
-    shortTable = { moves, inverse };
-  }
-  let best = null;
-  for (const move of shortTable.moves) {
-    const next = replay(state, [move], model);
-    if (model.isSolved(next)) return [move];
-    const final = shortTable.inverse.get(patternKey(next, model));
-    if (!best && final && model.isSolved(replay(next, [final], model))) best = [move, final];
-  }
-  return best;
-}
-
 function reducedState(state, model) {
   const f = facelets(state, model);
   for (let face = 0; face < 6; face++) {
@@ -173,18 +144,10 @@ function canFinish(state, model) {
   return twist % 3 === 0 && flip % 2 === 0 && permutationParity(cp) === permutationParity(ep);
 }
 
-function solve(state, model, nearOptimalEngine, onProgress) {
-  const pieces = toPieces(state, model);
-  if (model.isSolved(state)) return [];
-  onProgress = onProgress || function () {};
-  onProgress('4×4: checking for a short solution…');
-  const short = shortSolution(state, model);
-  if (short) return short;
-  if (!nearOptimalEngine || typeof nearOptimalEngine.solveNearOptimal !== 'function') {
-    throw new Error('The three-phase solver needs the 3×3 finishing engine.');
-  }
-  let reduced = reducedState(state, model), moves = [];
+function completeSolution(state, pieces, model, nearOptimalEngine, onProgress) {
+  let reduced = reducedState(state, model), moves = [], searched = false;
   if (!reduced || !canFinish(reduced, model)) {
+    searched = true;
     moves = expandMoves(reduction.reduce(pieces, onProgress));
     reduced = reducedState(replay(state, moves, model), model);
     if (!reduced || !canFinish(reduced, model)) throw new Error('The three-phase reduction did not finish.');
@@ -193,8 +156,55 @@ function solve(state, model, nearOptimalEngine, onProgress) {
   const finish = nearOptimalEngine.solveNearOptimal(reduced, onProgress);
   if (!Array.isArray(finish)) throw new Error('Invalid three-phase finishing moves.');
   moves = model.tidy(moves.concat(finish));
+  return { moves, searched };
+}
+
+function optimizeVerified(state, moves, model) {
   if (!model.isSolved(replay(state, moves, model))) throw new Error('The three-phase solution failed verification.');
+  try {
+    // Native wide turns cost one during reduction, but animate as two slices.
+    // Rank the final sequence in the same individual-slice metric the UI uses.
+    const optimized = moveOptimizer.optimize(moves, 4, model);
+    if (optimized.length <= moves.length && model.isSolved(replay(state, optimized, model))) return optimized;
+  } catch (_) { /* An optional simplification cannot discard a verified solve. */ }
   return moves;
+}
+
+function solve(state, model, nearOptimalEngine, onProgress) {
+  const pieces = toPieces(state, model);
+  if (model.isSolved(state)) return [];
+  onProgress = onProgress || function () {};
+  onProgress('4×4: checking for a short solution…');
+  const short = shallowSolver.find(state, model, 4);
+  if (short) return short;
+  if (!nearOptimalEngine || typeof nearOptimalEngine.solveNearOptimal !== 'function') {
+    throw new Error('The three-phase solver needs the 3×3 finishing engine.');
+  }
+
+  // Establish a complete verified answer before spending time on alternatives.
+  // An already-reduced cube keeps the inexpensive 3×3 finishing path.
+  const first = completeSolution(state, pieces, model, nearOptimalEngine, onProgress);
+  let best = optimizeVerified(state, first.moves, model);
+  if (!first.searched) return best;
+
+  const deadline = Date.now() + 5000;
+  const orientations = [['R', 1], ['R', 2], ['R', 3], ['F', 1], ['F', 3]];
+  for (let attempt = 0; attempt < orientations.length && Date.now() < deadline; attempt++) {
+    onProgress('4×4: comparing complete solutions (' + (attempt + 2) + '/6)…');
+    try {
+      const [face, n] = orientations[attempt];
+      const setup = [0, 1, 2, 3].map(depth => ({ face, n, depth }));
+      const rotated = replay(state, setup, model);
+      const result = completeSolution(rotated, toPieces(rotated, model), model, nearOptimalEngine, onProgress);
+      // The optimizer carries these setup rotations in its frame. Replaying
+      // the whole candidate on the original input checks that mapping too.
+      const candidate = optimizeVerified(state, setup.concat(result.moves), model);
+      if (candidate.length < best.length) best = candidate;
+    } catch (_) { /* Keep the verified answer if an alternative fails. */ }
+    // A candidate already in progress may finish past the comparison budget.
+    // Stop remains immediate because the entire search runs in the worker.
+  }
+  return best;
 }
 
 return { solve, toPieces, expandMoves, reducedState, canFinish };

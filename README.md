@@ -19,7 +19,8 @@ The second mode depends on the selected size:
 - **Near-optimal (3×3)** finds short solutions using Kociemba's two-phase algorithm.
   It does not guarantee the absolute fewest moves.
 - **Shorter solution (4×4–10×10)** compares shortened, verified solutions computed
-  from the current sticker positions. This is a best-effort mode, with no claim
+  from the current sticker positions. It also tries grouping compatible center
+  insertions to reduce repeated turns. This is a best-effort mode, with no claim
   of optimality or closeness to the minimum.
 
 A half turn counts as one move, just like a quarter turn.
@@ -27,13 +28,18 @@ A half turn counts as one move, just like a quarter turn.
 Larger cubes also offer additional search modes:
 
 - **Deep search (4×4–10×10)** compares all 24 cube orientations and additional
-  starting turns and color arrangements, keeping the shortest verified result.
+  starting turns and color arrangements with both center-solving methods,
+  keeping the shortest verified result. It first checks for a solution within
+  four individual slice turns, using only the current sticker positions.
   The additional search has an approximate 10-second budget; preparing tables
   and completing the active candidate can add time. It can finish sooner;
   the fewest moves are not guaranteed.
-- **Three-phase (4×4)** uses a specialized solver for short 4×4 solutions. It
-  does not guarantee the minimum, and its first search may take a few seconds
-  to prepare lookup tables.
+- **Three-phase (4×4)** compares complete solutions in six orientations and
+  simplifies the resulting individual slice turns. It also recognizes positions
+  within four turns of solved. After finding a verified answer, it spends up to
+  about five seconds comparing alternatives; the active candidate can finish
+  beyond that budget. It does not guarantee the minimum, and its first search
+  may take a few extra seconds to prepare lookup tables.
 
 Only modes that support the selected size appear in the selector. Changing to
 an unsupported size switches the selected search mode to that size's short-solution mode.

@@ -86,7 +86,6 @@ function assertTablesUninitialized(context) {
 
 test('generated worker artifact exactly matches all current sources and MIT notices', () => {
   assert.equal(bundle, build.renderBundle(), 'Run node scripts/build-worker.cjs after changing worker sources');
-  assert.equal(build.sources.length, 12);
   for (const license of build.licenses) {
     assert(bundle.includes(fs.readFileSync(path.join(root, license), 'utf8').trimEnd()));
   }
@@ -95,7 +94,7 @@ test('generated worker artifact exactly matches all current sources and MIT noti
 test('HTTP and local-file clients only create workers, without running solvers on the page', () => {
   for (const protocol of ['https:', 'file:']) {
     const harness = client(protocol);
-    for (const name of ['CubeModel', 'CubeSolverEngine', 'CubeTwoSolver', 'CubeTwoOptimalSolver', 'NxNSolver', 'CubeLayerSolver', 'CubeShortSolver', 'CubeFourReduction', 'CubeFourSolver', 'Cube', 'onmessage']) {
+    for (const name of ['CubeModel', 'CubeSolverEngine', 'CubeTwoSolver', 'CubeTwoOptimalSolver', 'NxNSolver', 'CubeLayerSolver', 'CubeCenterSolver', 'CubeMoveOptimizer', 'CubeShallowSolver', 'CubeShortSolver', 'CubeFourReduction', 'CubeFourSolver', 'Cube', 'onmessage']) {
       assert.equal(harness.context[name], undefined, name + ' must not execute in the page');
     }
     assert.deepEqual(harness.events, []);

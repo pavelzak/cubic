@@ -100,12 +100,12 @@ function app(options = {}) {
     CubeModel, document, location: { protocol: options.protocol || 'http:' },
     CubeSolverWorker: { create: () => new Worker('blob:test-worker') },
     window: { addEventListener: (type, listener) => { listeners[type] = listener; } },
-    performance: { now: () => 100 }, reduceMotion: true, invalidate() {},
+    performance: { now: () => options.now ? options.now() : 100 }, reduceMotion: true, invalidate() {},
     stage: { classList: { remove() {} } }, buildCube() {},
     runTurn: (move, done) => animations.push({ move, done })
   });
   vm.runInContext(`
-    const { N, solvedState, cloneState, applyRot, applyMove, moveName, isSolved: isSolvedState } = CubeModel;
+    const { FACES, N, solvedState, cloneState, applyRot, applyMove, moveName, isSolved: isSolvedState } = CubeModel;
     var size = Number(document.getElementById('cubeSize').value);
     var state = solvedState(size), drag = null;
     ${source}
@@ -172,6 +172,31 @@ function assertUnlocked(instance) {
   assert(instance.element('keys').children.every(button => !button.disabled));
   assert.equal(instance.element('btnReset').textContent, 'Reset');
 }
+
+test('the first manual turn starts the timer, including after Reset and solving', () => {
+  let now = 100;
+  const instance = app({ now: () => now });
+  for (let repeat = 0; repeat < 2; repeat++) {
+    assert.equal(instance.snapshot().timing, false);
+    instance.turn('U', 1);
+    assert.equal(instance.snapshot().timing, true);
+    now += 250;
+    instance.finish();
+    assert.equal(instance.element('rdTime').textContent, '0.3s');
+    now += 250;
+    instance.turn('U', 3);
+    instance.finish();
+    assert.equal(instance.snapshot().solved, true);
+    assert.equal(instance.snapshot().timing, false);
+    assert.equal(instance.element('rdTime').textContent, '0.5s');
+  }
+  instance.click('btnReset');
+  instance.turn('R', 1);
+  assert.equal(instance.snapshot().timing, true);
+  now += 200;
+  instance.finish();
+  assert.equal(instance.element('rdTime').textContent, '0.2s');
+});
 
 test('keyboard turns are blocked from solve request through playback', () => {
   const instance = app();

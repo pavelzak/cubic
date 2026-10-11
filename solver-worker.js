@@ -4,15 +4,22 @@ if (typeof CubeModel === 'undefined') importScripts('cube-model.js');
 if (typeof CubeSolverEngine === 'undefined') importScripts('solver-engine.js');
 
 var nearOptimalEngine = null;
-var twoSolverLoaded = false;
-var largeSolverLoaded = false;
-
 function loadLargeSolver() {
-  if (!largeSolverLoaded) {
-    if (typeof NxNSolver === 'undefined') importScripts('vendor/nxn-solver/solver.js');
-    if (typeof CubeLayerSolver === 'undefined') importScripts('layer-solver.js');
-    largeSolverLoaded = true;
-  }
+  if (typeof NxNSolver === 'undefined') importScripts('vendor/nxn-solver/solver.js');
+  if (typeof CubeLayerSolver === 'undefined') importScripts('layer-solver.js');
+}
+
+function loadShortSolver() {
+  loadLargeSolver();
+  loadSharedSearch();
+  if (typeof CubeCenterSolver === 'undefined') importScripts('center-solver.js');
+  if (typeof CubeShortSolver === 'undefined') importScripts('short-solver.js');
+  return CubeShortSolver;
+}
+
+function loadSharedSearch() {
+  if (typeof CubeMoveOptimizer === 'undefined') importScripts('move-optimizer.js');
+  if (typeof CubeShallowSolver === 'undefined') importScripts('shallow-solver.js');
 }
 
 function loadNearOptimalEngine(progress) {
@@ -35,10 +42,7 @@ self.onmessage = function (event) {
     var moves;
     if (request.mode === 'layer') {
       if (size === 2) {
-        if (!twoSolverLoaded) {
-          if (typeof CubeTwoSolver === 'undefined') importScripts('two-solver.js');
-          twoSolverLoaded = true;
-        }
+        if (typeof CubeTwoSolver === 'undefined') importScripts('two-solver.js');
         moves = CubeTwoSolver.solve(request.state, CubeModel, progress);
       } else if (size === 3) {
         progress('Working out a layer-by-layer solution…');
@@ -54,17 +58,14 @@ self.onmessage = function (event) {
       } else if (size === 3) {
         moves = loadNearOptimalEngine(progress).solveNearOptimal(request.state, progress);
       } else {
-        loadLargeSolver();
-        if (typeof CubeShortSolver === 'undefined') importScripts('short-solver.js');
-        moves = CubeShortSolver.solve(request.state, CubeModel, loadNearOptimalEngine(progress), progress);
+        moves = loadShortSolver().solve(request.state, CubeModel, loadNearOptimalEngine(progress), progress);
       }
     } else if (request.mode === 'deep') {
       if (size < 4 || size > 10) throw new Error('Deep search supports 4×4 through 10×10.');
-      loadLargeSolver();
-      if (typeof CubeShortSolver === 'undefined') importScripts('short-solver.js');
-      moves = CubeShortSolver.solveDeep(request.state, CubeModel, loadNearOptimalEngine(progress), progress);
+      moves = loadShortSolver().solveDeep(request.state, CubeModel, loadNearOptimalEngine(progress), progress);
     } else if (request.mode === 'three-phase') {
       if (size !== 4) throw new Error('Three-phase solving supports 4×4 only.');
+      loadSharedSearch();
       if (typeof CubeFourReduction === 'undefined') importScripts('vendor/four-solver/solver.js');
       if (typeof CubeFourSolver === 'undefined') importScripts('four-solver.js');
       moves = CubeFourSolver.solve(request.state, CubeModel, loadNearOptimalEngine(progress), progress);

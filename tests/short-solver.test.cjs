@@ -9,6 +9,7 @@ const model = require('../cube-model.js');
 const solver = require('../short-solver.js');
 const layerSolver = require('../layer-solver.js');
 const vendor = require('../vendor/nxn-solver/solver.js');
+const centerSolver = require('../center-solver.js');
 const adapter = require('../solver-engine.js');
 const Cube = require('../vendor/cubejs/cube.js');
 require('../vendor/cubejs/solve.js');
@@ -223,14 +224,27 @@ test('deep three-turn search preserves commuting slices and rotated color frames
   }
 });
 
-test('deep search continues reduction after an unsuccessful three-turn lookup', () => {
+test('deep search solves the reported four-turn 10×10 position before building a reduction', () => {
+  const state = model.solvedState(10), messages = [];
+  for (const move of [
+    { face: 'R', n: 1, depth: 1 }, { face: 'U', n: 3, depth: 0 },
+    { face: 'F', n: 2, depth: 0 }, { face: 'L', n: 1, depth: 2 }
+  ]) model.applyMove(state, move.face, move.n, move.depth);
+  const before = JSON.stringify(state), moves = solver.solveDeep(state, model, unavailableEngine, message => messages.push(message));
+  assert.equal(moves.length, 4);
+  assertSolved(state, moves);
+  assert.equal(JSON.stringify(state), before);
+  assert(!messages.some(message => message.includes('reduction')));
+});
+
+test('deep search continues reduction after an unsuccessful four-turn lookup', () => {
   const { state } = scramble(4, 57), original = layerSolver.solve;
   let reductions = 0;
   layerSolver.solve = function (...args) { reductions++; return original(...args); };
   try {
     const moves = solver.solveDeep(state, model, unavailableEngine);
     assert.equal(reductions, 1);
-    assert(moves.length > 3);
+    assert(moves.length > 4);
     assertSolved(state, moves);
   } finally { layerSolver.solve = original; }
 });
@@ -248,7 +262,7 @@ for (const [size, seed] of [[4, 1], [5, 19], [10, 19]]) {
     });
     assertSolved(state, deep);
     assert(deep.length < fast.length, `${deep.length} should improve on ${fast.length}`);
-    assert(attempts > 6 && attempts <= (size % 2 ? 96 : 120));
+    assert(attempts > 12 && attempts <= (size % 2 ? 192 : 240));
     assert(finishes <= attempts);
     if (size === 5) assert(finishes < attempts, 'Repeated final-layer states must reuse their cached solutions');
     assert.equal(JSON.stringify(state), before);
@@ -268,4 +282,21 @@ test('deep search stops starting candidates at its time limit and returns the ve
   assertSolved(state, moves);
   assert(moves.length <= baseline.length);
   assert(clock >= 10000 && clock < 15000, 'The search must stop after the simulated budget expires');
+});
+
+test('both center methods are tried without losing the original plans or a verified fallback', () => {
+  const { state } = scramble(5, 19), originalCenters = vendor.solveCenters, batchCenters = centerSolver.solve;
+  const calls = [];
+  vendor.solveCenters = cube => { calls.push('original'); return originalCenters(cube); };
+  centerSolver.solve = () => { calls.push('batch'); throw new Error('Injected center candidate failure'); };
+  try {
+    const filename = require.resolve('../short-solver.js');
+    const context = vm.createContext({ module: { exports: {} }, require: createRequire(filename), Date: { now() { return 0; } } });
+    vm.runInContext(fs.readFileSync(filename, 'utf8'), context, { filename });
+    const result = context.module.exports.solve(state, model, unavailableEngine);
+    assertSolved(state, result);
+    // The baseline uses one original reduction before the six paired plans.
+    assert.deepEqual(calls, ['original', ...Array.from({ length: 6 }, () => ['original', 'batch']).flat()]);
+    assert(result.length <= layerSolver.solve(state, model).length);
+  } finally { vendor.solveCenters = originalCenters; centerSolver.solve = batchCenters; }
 });

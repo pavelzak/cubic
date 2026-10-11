@@ -1,166 +1,21 @@
 (function (root, factory) {
   if (typeof module === 'object' && module.exports) {
     module.exports = factory(require('./vendor/nxn-solver/solver.js'), require('./layer-solver.js'),
-      require('./solver-engine.js'), function () { return require('./vendor/cubejs/cube.js'); });
+      require('./solver-engine.js'), require('./shallow-solver.js'), require('./move-optimizer.js'),
+      require('./center-solver.js'), function () { return require('./vendor/cubejs/cube.js'); });
   } else {
-    root.CubeShortSolver = factory(root.NxNSolver, root.CubeLayerSolver, root.CubeSolverEngine,
-      function () { return root.Cube; });
+    root.CubeShortSolver = factory(root.NxNSolver, root.CubeLayerSolver, root.CubeSolverEngine, root.CubeShallowSolver, root.CubeMoveOptimizer,
+      root.CubeCenterSolver, function () { return root.Cube; });
   }
-})(typeof self !== 'undefined' ? self : globalThis, function (vendor, layerSolver, adapter, getCube) {
+})(typeof self !== 'undefined' ? self : globalThis, function (vendor, layerSolver, adapter, shallowSolver, moveOptimizer, centerSolver, getCube) {
 'use strict';
 
 const faces = 'FLBRUD';
-const axes = ['R', 'U', 'F'];
-const opposite = { R: 'L', U: 'D', F: 'B' };
-const shortTables = new Map();
-const mod4 = n => ((n % 4) + 4) % 4;
-const dot = (a, b) => a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
-
-function rotate(vector, axis, turns) {
-  for (let i = 0; i < turns; i++) {
-    const d = dot(vector, axis);
-    const cross = [axis[1] * vector[2] - axis[2] * vector[1],
-      axis[2] * vector[0] - axis[0] * vector[2], axis[0] * vector[1] - axis[1] * vector[0]];
-    vector = axis.map((value, j) => value * d - cross[j]);
-  }
-  return vector;
-}
-
-function nearestMove(axis, depth, n, size) {
-  let face = axes[axis];
-  if (depth > (size - 1) / 2) {
-    depth = size - depth - 1;
-    face = opposite[face];
-    n = 4 - n;
-  }
-  return { face, depth, n };
-}
-
-function validateMove(move, size, model) {
-  const depth = move && move.depth !== undefined ? move.depth : 0;
-  if (!move || !Object.prototype.hasOwnProperty.call(model.N, move.face) ||
-      ![1, 2, 3].includes(move.n) || !Number.isInteger(depth) || depth < 0 || depth >= size) {
-    throw new Error('Invalid move in a shorter-solution candidate.');
-  }
-  return depth;
-}
-
-// Parallel slices commute. A common turn on every slice is a whole-cube
-// rotation: carry it in the coordinate frame instead of animating N moves.
-// A solved cube may finish in any orientation, as in CubeModel.isSolved.
-function optimize(moves, size, model) {
-  if (!Array.isArray(moves)) throw new Error('Invalid shorter-solution candidate.');
-  let current = moves;
-  for (let pass = 0; pass < 3; pass++) {
-    const groups = [];
-    for (const move of current) {
-      const depth = validateMove(move, size, model), normal = model.N[move.face];
-      const axis = normal.findIndex(value => value !== 0), positive = normal[axis] > 0;
-      let group = groups[groups.length - 1];
-      if (!group || group.axis !== axis) {
-        group = { axis, turns: Array(size).fill(0) };
-        groups.push(group);
-      }
-      const index = positive ? depth : size - depth - 1;
-      group.turns[index] = mod4(group.turns[index] + (positive ? move.n : -move.n));
-      if (group.turns.every(turns => turns === 0)) groups.pop();
-    }
-
-    let frame = [[1, 0, 0], [0, 1, 0], [0, 0, 1]];
-    const result = [];
-    for (const group of groups) {
-      const counts = [0, 0, 0, 0];
-      for (const turns of group.turns) counts[turns]++;
-      let rotation = 0;
-      for (let n = 1; n < 4; n++) if (counts[n] > counts[rotation]) rotation = n;
-      const virtualAxis = model.N[axes[group.axis]];
-      const actualAxis = frame.map(vector => dot(vector, virtualAxis));
-      const axis = actualAxis.findIndex(value => value !== 0), positive = actualAxis[axis] > 0;
-      for (let depth = 0; depth < size; depth++) {
-        const n = mod4(group.turns[depth] - rotation);
-        if (n) result.push(nearestMove(axis, positive ? depth : size - depth - 1,
-          positive ? n : 4 - n, size));
-      }
-      if (rotation) frame = frame.map(vector => rotate(vector, virtualAxis, rotation));
-    }
-    if (result.length >= current.length) return result;
-    current = result;
-  }
-  return current;
-}
+const optimize = moveOptimizer.optimize;
 
 function solves(state, moves, model) {
   try { adapter.verifySolution(state, moves, model); return true; }
   catch (_) { return false; }
-}
-
-// Color names do not change the move needed to solve a sticker pattern.
-// This also recognizes uniformly solved cubes in any final orientation.
-function patternKey(state, model) {
-  const matrix = layerSolver.toCube(state, model).matrix;
-  const colors = new Map();
-  let key = '';
-  for (const face of matrix) for (const row of face) for (const color of row) {
-    if (!colors.has(color)) colors.set(color, colors.size);
-    key += colors.get(color);
-  }
-  return key;
-}
-
-function shortSolution(state, size, model) {
-  let table = shortTables.get(size);
-  if (!table) {
-    const moves = [], states = new Map(), solved = model.solvedState(size);
-    for (let axis = 0; axis < 3; axis++) for (let depth = 0; depth < size; depth++) {
-      for (let n = 1; n <= 3; n++) {
-        const move = nearestMove(axis, depth, n, size), next = model.cloneState(solved);
-        moves.push(move);
-        model.applyMove(next, move.face, move.n, move.depth);
-        states.set(patternKey(next, model), { face: move.face, depth: move.depth, n: 4 - move.n });
-      }
-    }
-    table = { moves, states };
-    shortTables.set(size, table);
-  }
-  let best = null;
-  for (const move of table.moves) {
-    const next = model.cloneState(state);
-    model.applyMove(next, move.face, move.n, move.depth);
-    if (model.isSolved(next)) return [move];
-    const final = table.states.get(patternKey(next, model));
-    if (final && !best) {
-      const candidate = optimize([move, final], size, model);
-      if (solves(state, candidate, model)) best = candidate;
-    }
-  }
-  return best;
-}
-
-function threeTurnSolution(state, size, model) {
-  // The one-turn goal table was populated by shortSolution. Meet it with
-  // two turns from the current state instead of generating all three plies.
-  const table = shortTables.get(size);
-  const candidates = table.moves.map(move => {
-    const normal = model.N[move.face], axis = normal.findIndex(value => value !== 0);
-    return { move, axis, depth: normal[axis] > 0 ? move.depth : size - move.depth - 1 };
-  });
-  for (const first of candidates) {
-    const prefix = model.cloneState(state), a = first.move;
-    model.applyMove(prefix, a.face, a.n, a.depth);
-    for (const second of candidates) {
-      // Same-layer turns combine; different parallel layers commute, so
-      // keep one ordering while preserving genuine three-layer solutions.
-      if (first.axis === second.axis && second.depth <= first.depth) continue;
-      const next = model.cloneState(prefix), b = second.move;
-      model.applyMove(next, b.face, b.n, b.depth);
-      const final = table.states.get(patternKey(next, model));
-      if (final) {
-        const result = optimize([a, b, final], size, model);
-        if (solves(state, result, model)) return result;
-      }
-    }
-  }
-  return null;
 }
 
 function reducedState(cube, model) {
@@ -254,12 +109,8 @@ function solveWithOptions(state, model, nearOptimalEngine, onProgress, deep) {
   if (model.isSolved(state)) return [];
   onProgress = onProgress || function () {};
   onProgress('Checking for a short solution…');
-  const short = shortSolution(state, size, model);
+  const short = shallowSolver.find(state, model, deep ? 4 : 2);
   if (short) return short;
-  if (deep) {
-    const three = threeTurnSolution(state, size, model);
-    if (three) return three;
-  }
 
   onProgress('Building and simplifying a reduction solution…');
   let best = optimize(layerSolver.solve(state, model), size, model);
@@ -268,7 +119,10 @@ function solveWithOptions(state, model, nearOptimalEngine, onProgress, deep) {
   // Keep a verified result before searching alternative reduction orders.
   // Worker termination remains immediate if the user presses Stop.
   const deadline = Date.now() + (deep ? 10000 : 2000);
-  const plans = searchPlans(size, deep), finishCache = deep ? new Map() : null;
+  // Interleave both center methods so neither depends on a long search
+  // finishing every orientation. Keep the same overall time budget.
+  const plans = searchPlans(size, deep).flatMap(plan => [plan, { ...plan, batchCenters: true }]);
+  const finishCache = deep ? new Map() : null;
   for (let attempt = 0; attempt < plans.length && Date.now() < deadline; attempt++) {
     onProgress((deep ? 'Deep search: comparing reductions (' : 'Comparing shorter reductions (') +
       (attempt + 1) + '/' + plans.length + ')…');
@@ -290,7 +144,8 @@ function solveWithOptions(state, model, nearOptimalEngine, onProgress, deep) {
       }
       if (plan.setup) cube.turn(plan.setup[0], plan.setup[1], 1, 1);
       for (const [face, n] of plan.turns) cube.turn(face, n, size, size);
-      vendor.solveCenters(cube);
+      if (plan.batchCenters) centerSolver.solve(cube);
+      else vendor.solveCenters(cube);
       vendor.solveEdges(cube);
       let reduced = reducedState(cube, model);
       if (reductionParity(reduced, model)) {
