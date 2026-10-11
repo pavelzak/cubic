@@ -9,10 +9,12 @@ const sources = [
   'cube-model.js',
   'solver-engine.js',
   'two-solver.js',
+  'two-optimal-solver.js',
   'vendor/nxn-solver/solver.js',
   'layer-solver.js',
   'vendor/cubejs/cube.js',
   'vendor/cubejs/solve.js',
+  'short-solver.js',
   'solver-worker.js'
 ];
 const licenses = ['vendor/cubejs/LICENSE', 'vendor/nxn-solver/LICENSE'];

@@ -8,20 +8,28 @@ selector chooses the slice for the face buttons and keyboard shortcuts, counting
 inward from that face. For example, `2R` turns only the second slice from R.
 Hold Shift with U, D, L, R, F, or B for the inverse turn.
 
-Automatic solving is available for every size:
+Automatic solving is available for every size. **Layer by layer** solves both
+layers on 2×2, and follows the cross, corners, middle layer, and last layer on
+3×3. Larger cubes first solve their centers and pair their edges, including
+parity cases, then finish layer by layer.
 
-- **Layer by layer** solves both layers on 2×2, and follows the cross, corners,
-  middle layer, and last layer on 3×3. Larger cubes first solve their centers and
-  pair their edges, including parity cases, then finish layer by layer.
-- **Near-optimal (3×3 only)** finds short solutions quickly using Kociemba's two-phase
-  algorithm. It does not guarantee the absolute fewest moves. A half turn counts
-  as one move, just like a quarter turn.
+The second mode depends on the selected size:
+
+- **Optimal (2×2)** finds the fewest face turns, allowing any solved orientation.
+- **Near-optimal (3×3)** finds short solutions using Kociemba's two-phase algorithm.
+  It does not guarantee the absolute fewest moves.
+- **Shorter solution (4×4–10×10)** compares shortened, verified solutions. It can
+  also use recorded moves as another candidate. This is a best-effort mode,
+  with no claim of optimality or closeness to the minimum.
+
+A half turn counts as one move, just like a quarter turn.
 
 Select a mode before pressing **Solve**. Searches run in a background worker;
 **Stop** cancels a search or stops playback after the current turn finishes. The
-first near-optimal search takes a few extra seconds to prepare its lookup tables.
+first short-solution search may take a few extra seconds to prepare its lookup tables.
 Larger cubes can require thousands of turns. Every solution is checked against
-the current cube before playback; solving does not depend on its move history.
+the current cube before playback. Larger-cube solving also works without recorded
+history, using the current sticker positions.
 
 Changing sizes resets the cube and turn counter. Size and layer selection are
 locked while turns or searches are in progress; Stop remains available.

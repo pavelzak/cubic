@@ -86,7 +86,7 @@ function assertTablesUninitialized(context) {
 
 test('generated worker artifact exactly matches all current sources and MIT notices', () => {
   assert.equal(bundle, build.renderBundle(), 'Run node scripts/build-worker.cjs after changing worker sources');
-  assert.equal(build.sources.length, 8);
+  assert.equal(build.sources.length, 10);
   for (const license of build.licenses) {
     assert(bundle.includes(fs.readFileSync(path.join(root, license), 'utf8').trimEnd()));
   }
@@ -95,7 +95,7 @@ test('generated worker artifact exactly matches all current sources and MIT noti
 test('HTTP and local-file clients only create workers, without running solvers on the page', () => {
   for (const protocol of ['https:', 'file:']) {
     const harness = client(protocol);
-    for (const name of ['CubeModel', 'CubeSolverEngine', 'CubeTwoSolver', 'NxNSolver', 'CubeLayerSolver', 'Cube', 'onmessage']) {
+    for (const name of ['CubeModel', 'CubeSolverEngine', 'CubeTwoSolver', 'CubeTwoOptimalSolver', 'NxNSolver', 'CubeLayerSolver', 'CubeShortSolver', 'Cube', 'onmessage']) {
       assert.equal(harness.context[name], undefined, name + ' must not execute in the page');
     }
     assert.deepEqual(harness.events, []);
@@ -138,10 +138,16 @@ test('self-contained worker solves every cube size without fetching dependencies
   assertSolution(state, result);
   assert.equal(result.moves.length, 2);
   assertTablesUninitialized(worker.context);
-  for (const size of [2, 4, 10]) {
-    const result = worker.request({ id: 'unsupported-' + size, mode: 'near-optimal', state: model.solvedState(size) });
-    assert.equal(result.type, 'error');
-    assert.match(result.message, /only/);
+  for (const size of [2, 4, 5, 6, 7, 8, 9, 10]) {
+    const initial = model.solvedState(size);
+    const history = [
+      { face: 'R', n: 1, depth: size > 3 ? 1 : 0 },
+      { face: 'U', n: 3, depth: 0 }
+    ];
+    for (const move of history) model.applyMove(initial, move.face, move.n, move.depth);
+    const result = worker.request({ id: 'short-' + size, mode: 'near-optimal', state: initial, history });
+    assertSolution(initial, result);
+    assert(result.moves.length <= 2);
   }
   assert.equal(worker.request({ id: 'unknown', mode: 'unknown', state }).type, 'error');
 });

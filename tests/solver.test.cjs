@@ -150,13 +150,6 @@ test('worker routes both modes, loads the vendor lazily, and preserves request I
     }
   };
   vm.runInContext(fs.readFileSync(path.join(root, 'solver-worker.js'), 'utf8'), context);
-  for (const size of [2, 4, 5, 6, 7, 8, 9, 10]) {
-    const id = `${size}-near-optimal`;
-    context.onmessage({ data: { id, mode: 'near-optimal', state: model.solvedState(size) } });
-    assert.deepEqual(messages.at(-1), {
-      id, type: 'error', message: 'Near-optimal solving is available for 3×3 cubes only.'
-    });
-  }
   assert.equal(imports.some(filename => filename.includes('vendor')), false);
   const state = scramble('D L2');
   context.onmessage({ data: { id: 17, mode: 'layer', state } });
@@ -188,4 +181,32 @@ test('worker routes both modes, loads the vendor lazily, and preserves request I
   }
   assert.equal(imports.filter(filename => filename === 'vendor/nxn-solver/solver.js').length, 1);
   assert.equal(imports.filter(filename => filename === 'two-solver.js').length, 1);
+
+  for (const size of [2, 4, 5, 6, 7, 8, 9, 10]) {
+    const initial = model.solvedState(size);
+    const history = [
+      { face: 'R', n: 1, depth: size > 3 ? 1 : 0 },
+      { face: 'U', n: 3, depth: 0 }
+    ];
+    for (const move of history) model.applyMove(initial, move.face, move.n, move.depth);
+    const id = `${size}-short`;
+    context.onmessage({ data: { id, mode: 'near-optimal', state: initial, history } });
+    const result = messages.at(-1);
+    assert.equal(result.type, 'result', `${size}×${size}: ${result.message}`);
+    assert.equal(result.id, id);
+    assert(result.moves.length <= history.length, 'The short mode should retain a shorter verified candidate');
+    replay(initial, result.moves);
+  }
+  const largeState = model.solvedState(4);
+  model.applyMove(largeState, 'R', 1, 1);
+  model.applyMove(largeState, 'U', 3);
+  context.onmessage({ data: { id: 'large-without-history', mode: 'near-optimal', state: largeState } });
+  const largeResult = messages.at(-1);
+  assert.equal(largeResult.type, 'result', largeResult.message);
+  replay(largeState, largeResult.moves);
+  const layerMoves = require('../layer-solver.js').solve(largeState, model);
+  assert(largeResult.moves.length <= layerMoves.length);
+  assert.equal(imports.filter(filename => filename === 'two-optimal-solver.js').length, 1);
+  assert.equal(imports.filter(filename => filename === 'short-solver.js').length, 1);
+  assert.equal(imports.filter(filename => filename === 'vendor/cubejs/cube.js').length, 1);
 });

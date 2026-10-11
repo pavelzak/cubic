@@ -157,8 +157,8 @@ function assertUnlocked(instance) {
   for (const id of ['btnScramble', 'btnSolve', 'solverMode', 'cubeSize', 'layerDepth']) {
     assert.equal(instance.element(id).disabled, false, id + ' should be enabled');
   }
-  assert.equal(instance.element('nearOptimalMode').disabled, instance.snapshot().size !== 3,
-    'Near-optimal mode should be available only for 3×3');
+  assert.equal(instance.element('nearOptimalMode').disabled, false,
+    'The shorter-solution option should be available for every size');
   assert(instance.element('keys').children.every(button => !button.disabled));
   assert.equal(instance.element('btnReset').textContent, 'Reset');
 }
@@ -464,6 +464,7 @@ test('every size can request and play a layer-by-layer worker solution', () => {
     const request = instance.workers.at(-1).messages.at(-1);
     assert.equal(request.mode, 'layer');
     assert.equal(CubeModel.cubeSize(request.state), size);
+    assert.equal(Object.hasOwn(request, 'history'), false, 'Layer solving should receive only the current state');
     instance.result([{ face: 'U', n: 3, depth: 0 }]);
     instance.finish();
     assert.equal(instance.snapshot().solved, true);
@@ -471,21 +472,106 @@ test('every size can request and play a layer-by-layer worker solution', () => {
   }
 });
 
-test('changing to a non-3×3 cube selects layer mode and disables only the near-optimal option', () => {
+test('size changes preserve the selected mode and label the shorter-solution option accurately', () => {
   const instance = app();
-  for (const size of [2, 4, 5, 10]) {
-    instance.changeSize(3);
-    instance.element('solverMode').value = 'near-optimal';
-    instance.element('solverMode').listeners.change();
+  for (const mode of ['near-optimal', 'layer']) {
+    instance.element('solverMode').value = mode;
+    for (const size of [2, 3, 4, 5, 6, 7, 8, 9, 10, 3]) {
+      instance.changeSize(size);
+      assert.equal(instance.element('solverMode').value, mode);
+      assert.equal(instance.element('nearOptimalMode').textContent,
+        size === 2 ? 'Optimal' : size === 3 ? 'Near-optimal' : 'Shorter solution');
+      if (mode === 'near-optimal') {
+        const note = instance.element('solverNote').textContent;
+        if (size === 2) {
+          assert.match(note, /fewest moves/i);
+          assert.match(note, /quarter.turn.*half.turn.*one move/i);
+        } else {
+          assert.match(note, /fewest moves are not guaranteed/i);
+          if (size >= 4) assert.match(note, /history/i);
+        }
+      }
+      assertUnlocked(instance);
+    }
+  }
+});
+
+test('the shorter-solution mode plays results with the correct label on every size', () => {
+  const instance = app();
+  instance.element('solverMode').value = 'near-optimal';
+  for (let size = 2; size <= 10; size++) {
     instance.changeSize(size);
-    assert.equal(instance.element('solverMode').value, 'layer');
-    assert.equal(instance.element('solverMode').disabled, false);
-    assert.equal(instance.element('nearOptimalMode').disabled, true);
+    const depth = Math.floor((size - 1) / 2);
+    instance.turn('U', 1, depth); instance.finish();
+    instance.click('btnSolve');
+    const request = instance.workers.at(-1).messages.at(-1);
+    assert.equal(request.mode, 'near-optimal');
+    assert.equal(CubeModel.cubeSize(request.state), size);
+    if (size >= 4) assert.deepEqual(request.history, [{ face: 'U', n: 1, depth }]);
+    else assert.equal(Object.hasOwn(request, 'history'), false);
+    instance.result([{ face: 'U', n: 3, depth }]);
+    const label = size === 2 ? 'Optimal' : size === 3 ? 'Near-optimal' : 'Shorter solution';
+    assert.equal(instance.snapshot().status, label + ': playing 1 turns.');
+    instance.finish();
+    assert.equal(instance.snapshot().solved, true);
+    assert.equal(instance.snapshot().status, 'Solved in 1 turns (' + label.toLowerCase() + ').');
     assertUnlocked(instance);
   }
-  instance.changeSize(3);
-  assert.equal(instance.element('nearOptimalMode').disabled, false);
-  assert.equal(instance.element('solverMode').value, 'layer');
+});
+
+test('large-cube shorter requests include only the committed history prefix after rewind', () => {
+  for (const size of [4, 5, 10]) {
+    const instance = app();
+    instance.changeSize(size);
+    const depth = Math.floor((size - 1) / 2);
+    instance.turn('U', 1, depth); instance.finish();
+    instance.turn('F', 2, 0); instance.finish();
+    const prefixState = instance.snapshot().state;
+    instance.turn('R', 3, depth); instance.finish();
+    const futureState = instance.snapshot().state;
+    instance.travel(2); instance.finish();
+    instance.element('solverMode').value = 'near-optimal';
+    instance.click('btnSolve');
+    const worker = instance.workers.at(-1);
+    const request = worker.messages.at(-1);
+    assert.deepEqual(request.state, prefixState);
+    assert.deepEqual(request.history, [{ face: 'U', n: 1, depth }, { face: 'F', n: 2, depth: 0 }]);
+    assert(request.history.every(move => Object.keys(move).sort().join(',') === 'depth,face,n'));
+    assert.equal(instance.snapshot().historyMoves.length, 3, 'The future stays available while searching');
+    instance.click('btnReset');
+    instance.result([{ face: 'F', n: 2, depth: 0 }, { face: 'U', n: 3, depth }], worker);
+    assert.deepEqual(instance.snapshot().state, prefixState, 'Canceled replies must not change the current prefix');
+    instance.travel(3); instance.finish();
+    assert.deepEqual(instance.snapshot().state, futureState);
+    assert.equal(request.history.length, 2, 'A sent history snapshot must not grow with later navigation');
+    assertUnlocked(instance);
+  }
+});
+
+test('a shorter-solution error preserves future history and permits a new large-cube request', () => {
+  const instance = app();
+  instance.changeSize(10);
+  instance.turn('U', 1, 4); instance.finish();
+  instance.turn('F', 2, 3); instance.finish();
+  instance.travel(1); instance.finish();
+  instance.element('solverMode').value = 'near-optimal';
+  instance.click('btnSolve');
+  const oldWorker = instance.workers[0];
+  oldWorker.reply({ id: oldWorker.messages[0].id, type: 'error', message: 'Search interrupted' });
+  assert.equal(instance.snapshot().historyCursor, 1);
+  assert.equal(instance.snapshot().historyMoves.length, 2);
+  assertUnlocked(instance);
+  instance.click('btnSolve');
+  const currentWorker = instance.workers[1];
+  assert.deepEqual(currentWorker.messages[0].history, [{ face: 'U', n: 1, depth: 4 }]);
+  instance.result([{ face: 'U', n: 3, depth: 4 }], oldWorker);
+  assert.equal(instance.animations.length, 0, 'Old results must not interrupt the new request');
+  instance.result([{ face: 'U', n: 3, depth: 4 }], currentWorker);
+  instance.finish();
+  assert.equal(instance.snapshot().solved, true);
+  assert.deepEqual(instance.snapshot().historyMoves.map(move => move.name), ['5U', "5U'"]);
+  assert.match(instance.snapshot().status, /shorter solution/);
+  assertUnlocked(instance);
 });
 
 test('inner-layer solver results preserve depth, notation, and navigable history on every size', () => {
