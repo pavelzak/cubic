@@ -88,7 +88,13 @@
   .tape .tok:last-child{border-right:1px solid var(--rule)}
   .tape .tok.done{color:var(--muted); background:transparent}
   .tape .tok.now{background:var(--ink); color:var(--paper); border-color:var(--ink)}
-  .tape .empty{color:var(--muted); font-size:11px; letter-spacing:.1em; align-self:center}
+  .history .reel-head{font-size:10px; letter-spacing:.1em}
+  .history .reel-head .instruction{letter-spacing:0; text-transform:none}
+  .history .tape{padding-top:6px; min-height:40px}
+  .history .tok{padding:0 7px; min-width:36px; width:auto; text-transform:none}
+  .history .tok.future{color:var(--muted); background:transparent; border-style:dashed}
+  .history .tok:disabled{opacity:1; cursor:default}
+  .history .tok:hover:not(:disabled){background:var(--ink); color:var(--paper)}
 
   /* ---- controls ---- */
   .controls{padding:14px 18px 20px; display:flex; flex-direction:column; gap:14px}
@@ -141,25 +147,47 @@
   </header>
 
   <div class="stage" id="stage">
-    <div class="hint" id="hint">drag a face to turn it &nbsp;·&nbsp; drag the background to look around</div>
+    <div class="hint" id="hint">drag a slice to turn it &nbsp;·&nbsp; drag the background to look around</div>
   </div>
 
-  <section class="reel">
+  <section class="reel history" id="historyReel" aria-label="Move history">
     <div class="reel-head">
-      <span id="reelLabel">no moves yet</span>
-      <span class="count" id="reelCount"></span>
+      <span>History</span>
+      <span class="instruction">click a move to revisit</span>
+      <span class="count" id="historyCount"></span>
     </div>
-    <div class="tape" id="tape"><span class="empty">press scramble to begin</span></div>
+    <div class="tape" id="historyTape" aria-label="Previous cube positions"></div>
   </section>
 
   <div class="controls">
     <div>
-      <label class="solver-control">Solver
-        <select id="solverMode" aria-describedby="solverNote">
-          <option value="layer">Layer by layer</option>
-          <option value="near-optimal">Near-optimal</option>
-        </select>
-      </label>
+      <div class="row">
+        <label class="solver-control">Cube
+          <select id="cubeSize" aria-label="Cube size">
+            <option value="2">2×2</option>
+            <option value="3" selected>3×3</option>
+            <option value="4">4×4</option>
+            <option value="5">5×5</option>
+            <option value="6">6×6</option>
+            <option value="7">7×7</option>
+            <option value="8">8×8</option>
+            <option value="9">9×9</option>
+            <option value="10">10×10</option>
+          </select>
+        </label>
+        <label class="solver-control">Layer
+          <select id="layerDepth" aria-label="Layer counted inward from the selected face">
+            <option value="0">Outer</option>
+            <option value="1">Layer 2</option>
+          </select>
+        </label>
+        <label class="solver-control">Solver
+          <select id="solverMode" aria-describedby="solverNote">
+            <option value="layer">Layer by layer</option>
+            <option id="nearOptimalMode" value="near-optimal">Near-optimal (3×3)</option>
+          </select>
+        </label>
+      </div>
       <p class="solver-note" id="solverNote">Solves the cross, corners, middle layer, then the top.</p>
     </div>
     <div class="row">
@@ -169,22 +197,24 @@
       <label class="speed">speed <input id="speed" type="range" min="1" max="10" value="8" aria-label="Animation speed"></label>
     </div>
     <div class="keys" id="keys"></div>
-    <div class="status" id="status" role="status">Drag a face to turn it, or use the keys below.</div>
+    <div class="status" id="status" role="status">Drag a slice to turn it, or use the keys below.</div>
     <p class="legend">
-      Keyboard: <b>U D L R F B</b> turn a face clockwise, hold <b>shift</b> for counter&#8209;clockwise.
-      Notation stays fixed to the cube when you rotate the view — U is the white-centred face.
+      Keyboard: <b>U D L R F B</b> turn the selected layer clockwise; hold <b>shift</b> for counter&#8209;clockwise.
+      Layers count inward from each face: <b>2R</b> turns only the second slice from R.
+      Drag a slice to turn it, or the background to look around. Notation stays fixed when you rotate the view.
     </p>
   </div>
-  <footer class="version" aria-label="Application version">v1.1.0</footer>
+  <footer class="version" aria-label="Application version">v1.3.1</footer>
 </div>
 
 <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
-<script src="cube-model.js"></script>
+<script src="cube-model.js?v=1.3.1"></script>
+<script src="solver-worker-client.js?v=1.3.1"></script>
 <script>
 (function () {
 'use strict';
 
-const { N, solvedState, cloneState, applyRot, applyMove, moveName, isSolved: isSolvedState } = CubeModel;
+const { N, solvedState, cloneState, applyRot, applyMove, isSolved: isSolvedState } = CubeModel;
 
 /* ================= 3d scene ================= */
 if (typeof THREE === 'undefined') {
@@ -200,7 +230,8 @@ var CUBIE = 0.955, STICKER = 0.80, RADIUS = 0.11;
 var stage = document.getElementById('stage');
 var scene = new THREE.Scene();
 var camera = new THREE.PerspectiveCamera(32, 1, 0.1, 100);
-camera.position.set(4.3, 3.9, 6.4);
+var cameraDirection = new THREE.Vector3(4.3, 3.9, 6.4).normalize();
+camera.position.copy(cameraDirection).multiplyScalar(10);
 camera.lookAt(0, 0, 0);
 
 var needsRender = true;
@@ -232,10 +263,14 @@ var stickerGeo = roundedSquare(STICKER, RADIUS);
 var stickerMats = {};
 for (var f in COLORS) stickerMats[f] = new THREE.MeshLambertMaterial({ color: COLORS[f], side: THREE.DoubleSide });
 
-var state = solvedState();
+var size = Number(document.getElementById('cubeSize').value);
+var state = solvedState(size);
 var meshes = {};
 
 function buildCube() {
+  while (cube.children.length) cube.remove(cube.children[0]);
+  meshes = {};
+  cube.scale.setScalar(3 / size);
   for (var i = 0; i < state.length; i++) {
     var c = state[i];
     var g = new THREE.Mesh(bodyGeo, bodyMat);
@@ -260,6 +295,12 @@ function resize() {
   if (!w || !h) return;
   camera.aspect = w / h;
   camera.fov = w < 480 ? 40 : 32;
+  // Fit the cube's bounding sphere in both dimensions, including while orbiting.
+  var vertical = camera.fov * Math.PI / 360;
+  var horizontal = Math.atan(Math.tan(vertical) * camera.aspect);
+  var distance = 2.6 / Math.sin(Math.min(vertical, horizontal)) * 1.08;
+  camera.position.copy(cameraDirection).multiplyScalar(distance);
+  camera.lookAt(0, 0, 0);
   camera.updateProjectionMatrix();
   renderer.setSize(w, h, false);
   needsRender = true;
@@ -332,7 +373,15 @@ function runTurn(mv, done) {
 var queue = [], running = false;
 var onIdle = null;
 
-function faceMove(face, n) { return { axis: N[face], layer: 1, n: ((n % 4) + 4) % 4, name: face + (n === 1 ? '' : n === 2 ? '2' : "'") }; }
+function faceMove(face, n, depth) {
+  depth = depth || 0;
+  var turns = ((n % 4) + 4) % 4;
+  return {
+    face: face, depth: depth, axis: N[face], layer: (size - 1) / 2 - depth, n: turns,
+    name: (depth ? depth + 1 : '') + face + (turns === 1 ? '' : turns === 2 ? '2' : "'")
+  };
+}
+function selectedDepth() { return Number(layerDepth.value); }
 
 function enqueue(list) { queue = queue.concat(list); pump(); }
 function pump() {
@@ -341,9 +390,9 @@ function pump() {
   if (!mv) { running = false; if (onIdle) { var f = onIdle; onIdle = null; f(); } setBusy(false); return; }
   running = true;
   setBusy(true);
-  if (mv.tapeIndex !== undefined) markTape(mv.tapeIndex);
   runTurn(mv, function () {
     running = false;
+    commitHistory(mv);
     countMove();
     pump();
   });
@@ -353,72 +402,133 @@ function clearQueue() { queue = []; }
 /* ================= ui plumbing ================= */
 var elMoves = document.getElementById('rdMoves');
 var elTime = document.getElementById('rdTime');
-var elTape = document.getElementById('tape');
-var elLabel = document.getElementById('reelLabel');
-var elCount = document.getElementById('reelCount');
 var elStatus = document.getElementById('status');
 var elHint = document.getElementById('hint');
+var elHistoryTape = document.getElementById('historyTape');
+var elHistoryCount = document.getElementById('historyCount');
 var btnScramble = document.getElementById('btnScramble');
 var btnSolve = document.getElementById('btnSolve');
 var btnReset = document.getElementById('btnReset');
+var cubeSizeEl = document.getElementById('cubeSize');
+var layerDepth = document.getElementById('layerDepth');
 var solverMode = document.getElementById('solverMode');
+var nearOptimalMode = document.getElementById('nearOptimalMode');
 var solverNote = document.getElementById('solverNote');
 var solverWorker = null, solveRequest = null, nextSolveId = 0;
 
-var moveCount = 0, timing = false, tStart = 0, tShown = 0, tapeMode = '';
+var moveCount = 0, timing = false, tStart = 0, tShown = 0;
+var historyMoves = [], historyCursor = 0, historyNavigationTarget = null;
+var historyRenderedCursor = null;
 
 var busy = false;
 function setBusy(b) {
+  var changed = busy !== b;
   busy = b;
-  btnScramble.disabled = b; btnSolve.disabled = b; solverMode.disabled = b;
+  btnScramble.disabled = b;
+  btnSolve.disabled = b;
+  solverMode.disabled = b;
+  cubeSizeEl.disabled = b; layerDepth.disabled = b;
   btnReset.textContent = b ? 'Stop' : 'Reset';
   var ks = document.querySelectorAll('#keys button');
   for (var i = 0; i < ks.length; i++) ks[i].disabled = b;
+  if (changed) {
+    for (var j = 0; j < elHistoryTape.children.length; j++) {
+      elHistoryTape.children[j].disabled = b || j === historyCursor;
+    }
+  }
 }
 function countMove() {
   moveCount++;
   elMoves.textContent = moveCount;
   if (timing) tick();
-  if (isSolved() && timing) { timing = false; showTime(); elStatus.innerHTML = 'Solved in <b>' + moveCount + '</b> turns.'; }
+  if (!queue.length && isSolved() && timing) { timing = false; showTime(); elStatus.innerHTML = 'Solved in <b>' + moveCount + '</b> turns.'; }
 }
 function isSolved() { return isSolvedState(state); }
 function tick() { tShown = (performance.now() - tStart) / 1000; showTime(); }
 function showTime() { elTime.textContent = tShown.toFixed(1) + 's'; }
 function startTimer() { timing = true; tStart = performance.now(); tShown = 0; showTime(); }
 
-function setTape(label, names) {
-  tapeMode = label;
-  elLabel.textContent = label;
-  elCount.textContent = names.length ? names.length + ' turns' : '';
-  elTape.innerHTML = '';
-  if (!names.length) { elTape.innerHTML = '<span class="empty">nothing queued</span>'; return; }
-  for (var i = 0; i < names.length; i++) {
-    var s = document.createElement('span');
-    s.className = 'tok'; s.textContent = names[i];
-    elTape.appendChild(s);
+/* ---- completed move history ---- */
+function renderHistory() {
+  elHistoryCount.textContent = historyCursor + ' / ' + historyMoves.length;
+  while (elHistoryTape.children.length <= historyMoves.length) {
+    addHistoryButton(elHistoryTape.children.length);
   }
+  updateHistoryButton(historyRenderedCursor);
+  updateHistoryButton(historyCursor);
+  historyRenderedCursor = historyCursor;
+  var current = elHistoryTape.children[historyCursor];
+  if (current && historyMoves.length) current.scrollIntoView({ inline:'nearest', block:'nearest', behavior: reduceMotion ? 'auto' : 'smooth' });
 }
-function appendTape(name) {
-  if (tapeMode !== 'your turns') setTape('your turns', []);
-  if (elTape.querySelector('.empty')) elTape.innerHTML = '';
-  var s = document.createElement('span');
-  s.className = 'tok now'; s.textContent = name;
-  var prev = elTape.querySelector('.tok.now');
-  if (prev) prev.className = 'tok done';
-  elTape.appendChild(s);
-  elCount.textContent = elTape.children.length + ' turns';
-  s.scrollIntoView({ inline:'end', block:'nearest', behavior: reduceMotion ? 'auto' : 'smooth' });
+
+function addHistoryButton(position) {
+  var button = document.createElement('button');
+  button.type = 'button';
+  button.textContent = position === 0 ? 'Start' : historyMoves[position - 1].name;
+  var label = position === 0 ? 'Go to the start of history' : 'Go to after turn ' + position + ': ' + historyMoves[position - 1].name;
+  button.setAttribute('aria-label', label);
+  button.title = label;
+  button.addEventListener('click', function () { navigateHistory(position); });
+  elHistoryTape.appendChild(button);
+  updateHistoryButton(position);
 }
-function markTape(i) {
-  var toks = elTape.querySelectorAll('.tok');
-  for (var j = 0; j < toks.length; j++) toks[j].className = 'tok' + (j < i ? ' done' : j === i ? ' now' : '');
-  if (toks[i]) toks[i].scrollIntoView({ inline:'center', block:'nearest', behavior: reduceMotion ? 'auto' : 'smooth' });
+
+function updateHistoryButton(position) {
+  if (position === null) return;
+  var button = elHistoryTape.children[position];
+  if (!button) return;
+  button.className = 'tok ' + (position === historyCursor ? 'now' : position < historyCursor ? 'done' : 'future');
+  button.disabled = busy || position === historyCursor;
+  button.setAttribute('aria-current', position === historyCursor ? 'step' : 'false');
 }
+
+function commitHistory(move) {
+  // Navigation changes only the cursor. A new completed turn starts a branch.
+  if (move.historyPosition !== undefined) {
+    historyCursor = move.historyPosition;
+  } else {
+    historyMoves.length = historyCursor;
+    while (elHistoryTape.children.length > historyCursor + 1) {
+      elHistoryTape.removeChild(elHistoryTape.lastChild);
+    }
+    historyMoves.push({ face: move.face, depth: move.depth || 0, n: move.n, name: move.name });
+    historyCursor++;
+  }
+  renderHistory();
+}
+
+function navigateHistory(target) {
+  if (busy || !Number.isInteger(target) || target < 0 || target > historyMoves.length || target === historyCursor) return;
+  var list = [];
+  if (target < historyCursor) {
+    for (var i = historyCursor; i > target; i--) {
+      var previous = historyMoves[i - 1];
+      var backward = faceMove(previous.face, 4 - previous.n, previous.depth);
+      backward.historyPosition = i - 1;
+      list.push(backward);
+    }
+  } else {
+    for (var j = historyCursor; j < target; j++) {
+      var next = historyMoves[j];
+      var forward = faceMove(next.face, next.n, next.depth);
+      forward.historyPosition = j + 1;
+      list.push(forward);
+    }
+  }
+  timing = false;
+  historyNavigationTarget = target;
+  elStatus.textContent = target === 0 ? 'Returning to the start of history…' : 'Going to turn ' + target + '…';
+  onIdle = function () {
+    historyNavigationTarget = null;
+    elStatus.textContent = target === 0 ? 'At the start of history.' : 'At turn ' + target + ' of ' + historyMoves.length + '.';
+  };
+  enqueue(list);
+}
+renderHistory();
 
 /* ---- actions ---- */
 function userTurn(mv) {
   if (busy || running || queue.length) return;
-  appendTape(mv.name);
   if (!timing && !isSolved()) startTimer();
   enqueue([mv]);
 }
@@ -426,31 +536,59 @@ function userTurn(mv) {
 btnScramble.addEventListener('click', function () {
   if (busy) return;
   clearQueue();
-  var faces = ['U', 'D', 'L', 'R', 'F', 'B'], list = [], names = [], last = '';
-  for (var i = 0; i < 25; i++) {
+  var faces = ['U', 'D', 'L', 'R', 'F', 'B'], list = [], last = '';
+  var count = size === 2 ? 15 : size === 3 ? 25 : size * 10;
+  for (var i = 0; i < count; i++) {
     var f; do { f = faces[Math.floor(Math.random() * 6)]; } while (f === last);
     last = f;
     var n = 1 + Math.floor(Math.random() * 3);
-    var mv = faceMove(f, n); mv.tapeIndex = i;
-    list.push(mv); names.push(mv.name);
+    var depth = size === 3 ? 0 : Math.floor(Math.random() * Math.ceil(size / 2));
+    list.push(faceMove(f, n, depth));
   }
-  setTape('scramble', names);
   moveCount = 0; elMoves.textContent = '0';
   timing = false; tShown = 0; showTime();
   elStatus.textContent = 'Scrambling…';
   elHint.style.opacity = '0';
   onIdle = function () {
-    elStatus.textContent = 'Scrambled. Turn faces yourself, or press Solve.';
+    elStatus.textContent = 'Scrambled. Turn layers yourself, or press Solve.';
     moveCount = 0; elMoves.textContent = '0';
     startTimer();
   };
   enqueue(list);
 });
 
-solverMode.addEventListener('change', function () {
-  solverNote.textContent = solverMode.value === 'layer'
-    ? 'Solves the cross, corners, middle layer, then the top.'
-    : 'Finds short solutions quickly; the absolute fewest moves are not guaranteed.';
+function updateSolverNote() {
+  nearOptimalMode.disabled = size !== 3;
+  if (size !== 3) solverMode.value = 'layer';
+  solverNote.textContent = solverMode.value === 'near-optimal'
+    ? 'Finds short solutions quickly; the absolute fewest moves are not guaranteed.'
+    : size === 2
+      ? 'Solves the bottom layer, then orients and places the top corners.'
+      : size === 3
+        ? 'Solves the cross, corners, middle layer, then the top.'
+        : 'Solves centers and pairs edges, handles parity, then solves the layers. Large cubes can take thousands of turns.';
+}
+solverMode.addEventListener('change', updateSolverNote);
+
+cubeSizeEl.addEventListener('change', function () {
+  var nextSize = Number(cubeSizeEl.value);
+  if (busy || !Number.isInteger(nextSize) || nextSize < 2 || nextSize > 10) {
+    cubeSizeEl.value = String(size);
+    return;
+  }
+  size = nextSize;
+  layerDepth.innerHTML = '';
+  for (var depth = 0; depth < Math.ceil(size / 2); depth++) {
+    var option = document.createElement('option');
+    option.value = String(depth);
+    option.textContent = depth === 0 ? 'Outer' : 'Layer ' + (depth + 1);
+    layerDepth.appendChild(option);
+  }
+  layerDepth.value = '0';
+  resetPuzzle();
+  updateSolverNote();
+  setBusy(false);
+  elStatus.textContent = size + '×' + size + ' ready. Drag a slice to turn it, or use the keys below.';
 });
 
 function cancelSolve() {
@@ -468,18 +606,18 @@ function failSolve(message) {
 function playSolution(moves, request) {
   // Validate against the actual cube model before playing any worker result.
   if (!Array.isArray(moves) || !moves.every(function (m) {
-    return m && Object.prototype.hasOwnProperty.call(N, m.face) && [1, 2, 3].indexOf(m.n) !== -1;
+    return m && Object.prototype.hasOwnProperty.call(N, m.face) && [1, 2, 3].indexOf(m.n) !== -1 &&
+      (m.depth === undefined || (Number.isInteger(m.depth) && m.depth >= 0 && m.depth < size));
   })) throw new Error('Invalid moves returned by the solver.');
   var check = cloneState(request.initial);
-  for (var i = 0; i < moves.length; i++) applyMove(check, moves[i].face, moves[i].n);
+  for (var i = 0; i < moves.length; i++) applyMove(check, moves[i].face, moves[i].n, moves[i].depth);
   if (!isSolvedState(check)) throw new Error('The returned moves do not solve this cube.');
 
   solveRequest = null;
   var label = request.mode === 'layer' ? 'Layer by layer' : 'Near-optimal';
-  var list = moves.map(function (m, i) {
-    var mv = faceMove(m.face, m.n); mv.tapeIndex = i; return mv;
+  var list = moves.map(function (m) {
+    return faceMove(m.face, m.n, m.depth);
   });
-  setTape(label.toLowerCase() + ' solution', moves.map(moveName));
   moveCount = 0; elMoves.textContent = '0';
   startTimer();
   elStatus.textContent = label + ': playing ' + moves.length + ' turns.';
@@ -494,13 +632,14 @@ function playSolution(moves, request) {
 
 btnSolve.addEventListener('click', function () {
   if (busy) return;
+  updateSolverNote();
   if (isSolved()) { elStatus.textContent = 'Already solved.'; return; }
   setBusy(true);
   elStatus.textContent = 'Working out a solution…';
   solveRequest = { id: ++nextSolveId, mode: solverMode.value, initial: cloneState(state) };
   try {
     if (!solverWorker) {
-      var worker = new Worker('solver-worker.js');
+      var worker = CubeSolverWorker.create();
       solverWorker = worker;
       worker.onmessage = function (event) {
         var data = event.data, request = solveRequest;
@@ -524,35 +663,41 @@ btnSolve.addEventListener('click', function () {
     }
     solverWorker.postMessage({ id: solveRequest.id, mode: solveRequest.mode, state: solveRequest.initial });
   } catch (err) {
-    failSolve(location.protocol === 'file:'
-      ? 'Open this page through a local web server; see the README for instructions.'
-      : err.message);
+    failSolve(err.message);
   }
 });
 
 btnReset.addEventListener('click', function () {
   if (busy) {                       // acting as Stop: let the current turn land, drop the rest
-    var left = queue.length, searching = !!solveRequest;
+    var left = queue.length, searching = !!solveRequest, traveling = historyNavigationTarget !== null;
     if (searching) cancelSolve();
     clearQueue(); onIdle = null;
+    historyNavigationTarget = null;
     timing = false;
     if (!running) setBusy(false);
-    elStatus.textContent = searching ? 'Solution search stopped.' : 'Stopped, ' + left + ' turns left unplayed.';
+    elStatus.textContent = searching ? 'Solution search stopped.'
+      : traveling ? 'History travel stopped after the current turn.'
+      : 'Stopped, ' + left + ' turns left unplayed.';
     return;
   }
+  resetPuzzle();
+});
+
+function resetPuzzle() {
   clearQueue(); onIdle = null;
-  state = solvedState();
-  for (var i = 0; i < state.length; i++) {
-    var c = state[i], m = meshes[c.id];
-    m.position.set(c.p[0], c.p[1], c.p[2]);
-    m.quaternion.identity();
-  }
+  historyMoves = []; historyCursor = 0; historyNavigationTarget = null;
+  historyRenderedCursor = null;
+  elHistoryTape.innerHTML = '';
+  renderHistory();
+  drag = null;
+  stage.classList.remove('grabbing');
+  state = solvedState(size);
+  buildCube();
   invalidate();
   moveCount = 0; elMoves.textContent = '0';
   timing = false; tShown = 0; showTime();
-  setTape('no moves yet', []);
   elStatus.textContent = 'Back to solved.';
-});
+}
 
 /* ---- keypad ---- */
 var keysEl = document.getElementById('keys');
@@ -561,7 +706,7 @@ var keysEl = document.getElementById('keys');
     var b = document.createElement('button');
     b.textContent = pair[1];
     b.setAttribute('aria-label', 'Turn ' + f + (pair[0] === 3 ? ' counter-clockwise' : ' clockwise'));
-    b.addEventListener('click', function () { userTurn(faceMove(f, pair[0])); });
+    b.addEventListener('click', function () { userTurn(faceMove(f, pair[0], selectedDepth())); });
     keysEl.appendChild(b);
   });
 });
@@ -571,7 +716,7 @@ window.addEventListener('keydown', function (e) {
   if (['U', 'D', 'L', 'R', 'F', 'B'].indexOf(f) < 0) return;
   if (document.activeElement && /^(INPUT|SELECT|TEXTAREA)$/.test(document.activeElement.tagName)) return;
   e.preventDefault();
-  userTurn(faceMove(f, e.shiftKey ? 3 : 1));
+  userTurn(faceMove(f, e.shiftKey ? 3 : 1, selectedDepth()));
 });
 
 /* ================= pointer: orbit + grab a layer ================= */
@@ -631,7 +776,7 @@ stage.addEventListener('pointermove', function (ev) {
   for (var i = 0; i < axes.length; i++) {  
     var w = new THREE.Vector3(axes[i][0], axes[i][1], axes[i][2]);
     if (Math.abs(w.dot(drag.n)) > 0.5) continue;             // must lie in the grabbed face
-    var tip = drag.point.clone().add(w.clone().applyQuaternion(cube.quaternion).multiplyScalar(0.45));
+    var tip = drag.point.clone().add(w.clone().applyQuaternion(cube.quaternion).multiplyScalar(0.45 * cube.scale.x));
     var d = toScreen(tip).sub(origin);
     if (d.length() < 0.001) continue;
     var score = d.normalize().dot(pointer);
@@ -643,14 +788,14 @@ stage.addEventListener('pointermove', function (ev) {
   var rotAxis = new THREE.Vector3().crossVectors(drag.n, best).round();
   var p = drag.cubie.p;
   var layer = p[0] * rotAxis.x + p[1] * rotAxis.y + p[2] * rotAxis.z;
-  if (layer === 0) {                                          // grabbed a centre strip: spin the view instead
-    drag.mode = 'orbit'; drag.x = ev.clientX; drag.y = ev.clientY; return;
-  }
-  var av = layer === 1 ? [rotAxis.x, rotAxis.y, rotAxis.z] : [-rotAxis.x, -rotAxis.y, -rotAxis.z];
+  // Use the nearest face as the notation origin; center slices use rotAxis.
+  var sign = layer < 0 ? -1 : 1;
+  var av = [rotAxis.x * sign, rotAxis.y * sign, rotAxis.z * sign];
   var face = null;
   for (var f in N) if (N[f][0] === av[0] && N[f][1] === av[1] && N[f][2] === av[2]) face = f;
   if (!face) return;
-  userTurn(faceMove(face, layer === 1 ? 3 : 1));
+  var depth = Math.round((size - 1) / 2 - Math.abs(layer));
+  userTurn(faceMove(face, sign === 1 ? 3 : 1, depth));
 });
 
 function endDrag(ev) {

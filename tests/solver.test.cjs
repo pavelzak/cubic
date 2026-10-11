@@ -16,7 +16,7 @@ function scramble(sequence) {
 
 function replay(state, moves) {
   const result = model.cloneState(state);
-  for (const move of moves) model.applyMove(result, move.face, move.n);
+  for (const move of moves) model.applyMove(result, move.face, move.n, move.depth);
   assert.equal(model.isSolved(result), true);
 }
 
@@ -54,6 +54,24 @@ test('facelet conversion normalizes rotated centers', () => {
   for (const layer of [-1, 0, 1]) model.applyRot(state, model.N.R, layer, 1);
   model.applySeq(state, "R U F2 L'");
   assert.equal(adapter.toFacelets(state, model), new Cube().move("R U F2 L'").asString());
+});
+
+test('3×3 solver adapters reject every other size before initializing tables', () => {
+  const engine = adapter.createEngine(model, Cube);
+  const originalInit = Cube.initSolver;
+  Cube.initSolver = () => { throw new Error('Unexpected initialization for an unsupported size'); };
+  try {
+    for (const size of [2, 4, 5, 6, 7, 8, 9, 10]) {
+      const state = model.solvedState(size);
+      const expected = { message: 'Solving is available for 3×3 cubes only.' };
+      assert.throws(() => adapter.toFacelets(state, model), expected);
+      assert.throws(() => engine.solveNearOptimal(state), expected);
+      model.applyMove(state, 'R', 1);
+      assert.throws(() => engine.solveNearOptimal(state), expected);
+    }
+  } finally {
+    Cube.initSolver = originalInit;
+  }
 });
 
 test('positions within six turns use a shortest solution without initializing two-phase tables', () => {
@@ -110,6 +128,12 @@ test('verification rejects incorrect or malformed solutions', () => {
   assert.throws(() => adapter.verifySolution(scramble('R'), [], model), /failed verification/);
   assert.throws(() => adapter.verifySolution(scramble('R'), [{ face: 'X', n: 1 }], model), /invalid move/);
   assert.throws(() => adapter.verifySolution(scramble('R'), [{ face: 'R', n: 0 }], model), /invalid move/);
+  for (const depth of [-1, 3, 0.5, NaN, '1']) {
+    assert.throws(() => adapter.verifySolution(scramble('R'), [{ face: 'R', n: 3, depth }], model), /invalid move/);
+  }
+  const inner = model.solvedState(6);
+  model.applyMove(inner, 'R', 1, 2);
+  assert.doesNotThrow(() => adapter.verifySolution(inner, [{ face: 'R', n: 3, depth: 2 }], model));
 });
 
 test('worker routes both modes, loads the vendor lazily, and preserves request IDs', () => {
@@ -126,6 +150,14 @@ test('worker routes both modes, loads the vendor lazily, and preserves request I
     }
   };
   vm.runInContext(fs.readFileSync(path.join(root, 'solver-worker.js'), 'utf8'), context);
+  for (const size of [2, 4, 5, 6, 7, 8, 9, 10]) {
+    const id = `${size}-near-optimal`;
+    context.onmessage({ data: { id, mode: 'near-optimal', state: model.solvedState(size) } });
+    assert.deepEqual(messages.at(-1), {
+      id, type: 'error', message: 'Near-optimal solving is available for 3×3 cubes only.'
+    });
+  }
+  assert.equal(imports.some(filename => filename.includes('vendor')), false);
   const state = scramble('D L2');
   context.onmessage({ data: { id: 17, mode: 'layer', state } });
   const layerResult = messages.find(message => message.id === 17 && message.type === 'result');
@@ -142,4 +174,18 @@ test('worker routes both modes, loads the vendor lazily, and preserves request I
 
   context.onmessage({ data: { id: 19, mode: 'unknown', state } });
   assert.deepEqual(messages.at(-1), { id: 19, type: 'error', message: 'Unknown solver mode.' });
+
+  for (const size of [2, 4, 5, 6, 7, 8, 9, 10]) {
+    const initial = model.solvedState(size);
+    model.applyMove(initial, 'R', 1, size > 3 ? 1 : 0);
+    model.applyMove(initial, 'U', 3);
+    const id = `${size}-layer`;
+    context.onmessage({ data: { id, mode: 'layer', state: initial } });
+    const result = messages.at(-1);
+    assert.equal(result.type, 'result', `${size}×${size}: ${result.message}`);
+    assert.equal(result.id, id);
+    replay(initial, result.moves);
+  }
+  assert.equal(imports.filter(filename => filename === 'vendor/nxn-solver/solver.js').length, 1);
+  assert.equal(imports.filter(filename => filename === 'two-solver.js').length, 1);
 });

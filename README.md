@@ -1,28 +1,64 @@
 # cubic
 
-Interactive 3D Rubik's cube with two solver modes:
+Interactive 3D Rubik's cubes from **2×2 through 10×10**. Choose a size to start
+with a solved cube. Every size supports scrambling, manual turns, and Reset.
 
-- **Layer by layer** follows the cross, corners, middle layer, and last layer.
-- **Near-optimal** finds short solutions quickly using Kociemba's two-phase
+Drag a slice to turn it, or drag the background to rotate the view. The **Layer**
+selector chooses the slice for the face buttons and keyboard shortcuts, counting
+inward from that face. For example, `2R` turns only the second slice from R.
+Hold Shift with U, D, L, R, F, or B for the inverse turn.
+
+Automatic solving is available for every size:
+
+- **Layer by layer** solves both layers on 2×2, and follows the cross, corners,
+  middle layer, and last layer on 3×3. Larger cubes first solve their centers and
+  pair their edges, including parity cases, then finish layer by layer.
+- **Near-optimal (3×3 only)** finds short solutions quickly using Kociemba's two-phase
   algorithm. It does not guarantee the absolute fewest moves. A half turn counts
   as one move, just like a quarter turn.
 
-Select a mode before pressing **Solve**. Both searches run in a background worker;
+Select a mode before pressing **Solve**. Searches run in a background worker;
 **Stop** cancels a search or stops playback after the current turn finishes. The
 first near-optimal search takes a few extra seconds to prepare its lookup tables.
+Larger cubes can require thousands of turns. Every solution is checked against
+the current cube before playback; solving does not depend on its move history.
+
+Changing sizes resets the cube and turn counter. Size and layer selection are
+locked while turns or searches are in progress; Stop remains available.
+
+## Move history
+
+Scramble, manual, and solver turns all appear in one History strip as they finish.
+Click a move to animate back to the
+state immediately after it, or click **Start** to return to the initial cube.
+Later moves remain available to travel forward again. Making a new turn,
+scrambling, or playing a new solution after rewinding replaces that future.
+Stop pauses history travel after the current turn finishes. Reset and changing
+sizes clear the history.
 
 **Live demo:** https://pavelzak.github.io/cubic/
 
 ## Run locally
 
-Serve the repository over HTTP so the browser can load the solver worker:
+Open `index.html` directly in your browser, or serve the repository over HTTP:
 
 ```sh
 python3 -m http.server 8000
 ```
 
-Open http://localhost:8000. Three.js loads from a CDN; the solver code is included
-in the repository. No build step is needed.
+For the server option, open http://localhost:8000. Three.js loads from a CDN;
+the solver code is included in the repository. The self-contained solver worker
+works with both local files and web servers. No build step is needed to run it.
+
+After editing solver sources, rebuild the checked-in worker bundle:
+
+```sh
+node scripts/build-worker.cjs
+```
+
+The tests check that the bundle matches its sources. When releasing changes,
+update the version footer and script URL versions in `index.html` so browsers
+load the matching files.
 
 ## Tests
 
@@ -34,3 +70,7 @@ node --test tests/*.test.cjs
 
 The near-optimal engine uses [cube.js](https://github.com/ldez/cubejs), vendored
 under its MIT license in `vendor/cubejs`.
+The larger-cube layer solver is adapted from
+[Chu-Won's solver](https://codepen.io/Chu-Won/pen/JoRaxPj), based on
+[pycubing](https://github.com/vivaansinghvi07/pycubing). Its MIT notices and
+provenance are included in `vendor/nxn-solver`.

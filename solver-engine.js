@@ -16,7 +16,14 @@
     B: function (r, c) { return [1 - c, 1 - r, -1]; }
   };
 
+  function requireThreeByThree(state, model) {
+    if (model.cubeSize(state) !== 3) {
+      throw new Error('Solving is available for 3×3 cubes only.');
+    }
+  }
+
   function toFacelets(state, model) {
+    requireThreeByThree(state, model);
     var colors = Object.create(null);
     for (var face of model.FACES) {
       var center = model.pieceAt(state, model.N[face]);
@@ -40,12 +47,16 @@
   }
 
   function verifySolution(state, moves, model) {
+    var size = model.cubeSize(state);
+    if (!Array.isArray(moves)) throw new Error('The solver returned an invalid move list.');
     var replay = model.cloneState(state);
     for (var move of moves) {
-      if (!model.N[move.face] || ![1, 2, 3].includes(move.n)) {
+      var depth = move && move.depth !== undefined ? move.depth : 0;
+      if (!move || !Object.prototype.hasOwnProperty.call(model.N, move.face) ||
+          ![1, 2, 3].includes(move.n) || !Number.isInteger(depth) || depth < 0 || depth >= size) {
         throw new Error('The solver returned an invalid move.');
       }
-      model.applyMove(replay, move.face, move.n);
+      model.applyMove(replay, move.face, move.n, depth);
     }
     if (!model.isSolved(replay)) throw new Error('The solution failed verification.');
     return moves;
@@ -101,6 +112,7 @@
     }
 
     function solveNearOptimal(state, onProgress) {
+      requireThreeByThree(state, model);
       onProgress = onProgress || function () {};
       if (model.isSolved(state)) return [];
       var cube = Cube.fromString(toFacelets(state, model));

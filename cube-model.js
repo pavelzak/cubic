@@ -21,17 +21,28 @@ function rot1(v, a) { const d = dot(a, v), c = cross(a, v); return [a[0] * d - c
 function rotN(v, a, n) { let r = v; for (let i = 0; i < n; i++) r = rot1(r, a); return r; }
 function faceOfVec(v) { for (const f of FACES) if (same(N[f], v)) return f; return null; }
 
-function solvedState() {
+function solvedState(size = 3) {
+  if (!Number.isInteger(size) || size < 2 || size > 10) {
+    throw new RangeError('Cube size must be an integer from 2 to 10.');
+  }
+  const extent = (size - 1) / 2;
   const st = []; let id = 0;
-  for (let x = -1; x <= 1; x++) for (let y = -1; y <= 1; y++) for (let z = -1; z <= 1; z++) {
-    if (!x && !y && !z) continue;
+  for (let x = -extent; x <= extent; x++) for (let y = -extent; y <= extent; y++) for (let z = -extent; z <= extent; z++) {
+    if (Math.max(Math.abs(x), Math.abs(y), Math.abs(z)) !== extent) continue;
     const s = {};
-    for (const f of FACES) if (dot([x, y, z], N[f]) === 1) s[f] = f;
+    for (const f of FACES) if (dot([x, y, z], N[f]) === extent) s[f] = f;
     st.push({ id: id++, p: [x, y, z], s });
   }
   return st;
 }
 const cloneState = st => st.map(c => ({ id: c.id, p: c.p.slice(), s: Object.assign({}, c.s) }));
+
+function cubeSize(state) {
+  if (!state.length) throw new Error('Cannot determine the size of an empty cube.');
+  // Every stored cubie is on the surface, including after any legal layer turn.
+  const p = state[0].p;
+  return 2 * Math.max(Math.abs(p[0]), Math.abs(p[1]), Math.abs(p[2])) + 1;
+}
 
 function applyRot(st, axis, layer, n) {
   n = ((n % 4) + 4) % 4; if (!n) return;
@@ -43,7 +54,13 @@ function applyRot(st, axis, layer, n) {
     c.s = ns;
   }
 }
-const applyMove = (st, f, n) => applyRot(st, N[f], 1, n);
+function applyMove(st, f, n, depth = 0) {
+  const size = cubeSize(st);
+  if (!Number.isInteger(depth) || depth < 0 || depth >= size) {
+    throw new RangeError('Layer depth must be an integer from 0 to ' + (size - 1) + '.');
+  }
+  applyRot(st, N[f], (size - 1) / 2 - depth, n);
+}
 
 function parseSeq(str) {
   const out = [];
@@ -58,6 +75,7 @@ const seqLen = s => (s && s.trim() ? s.trim().split(/\s+/).length : 0);
 
 /* ---------- solver ---------- */
 function solve(initial) {
+  if (cubeSize(initial) !== 3) throw new Error('Layer-by-layer solving supports only 3×3 cubes.');
   const st = cloneState(initial);
   const moves = [];
   // colour on each centre, so slice turns don't confuse the solver
@@ -240,27 +258,33 @@ function tidy(moves) {
   const out = [];
   for (const m of moves) {
     const last = out[out.length - 1];
-    if (last && last.face === m.face) {
+    if (last && last.face === m.face && (last.depth || 0) === (m.depth || 0)) {
       last.n = (last.n + m.n) % 4;
       if (last.n === 0) out.pop();
-    } else out.push({ face: m.face, n: m.n });
+    } else {
+      const copy = { face: m.face, n: m.n };
+      if (m.depth !== undefined) copy.depth = m.depth;
+      out.push(copy);
+    }
   }
   return out;
 }
-const moveName = m => m.face + (m.n === 1 ? '' : m.n === 2 ? '2' : "'");
+const moveName = m => (m.depth ? m.depth + 1 : '') + m.face + (m.n === 1 ? '' : m.n === 2 ? '2' : "'");
 
 function isSolved(state) {
+  const colors = {};
   for (const cubie of state) {
     for (const face of Object.keys(cubie.s)) {
-      const centre = pieceAt(state, N[face]);
-      if (cubie.s[face] !== centre.s[face]) return false;
+      const color = cubie.s[face];
+      if (colors[face] === undefined) colors[face] = color;
+      else if (colors[face] !== color) return false;
     }
   }
-  return true;
+  return FACES.every(face => colors[face] !== undefined) && new Set(Object.values(colors)).size === 6;
 }
 
 return {
-  FACES, N, solvedState, cloneState, applyRot, applyMove, parseSeq, applySeq,
+  FACES, N, solvedState, cubeSize, cloneState, applyRot, applyMove, parseSeq, applySeq,
   pieceAt, solveLayerByLayer: solve, tidy, moveName, isSolved
 };
 });
