@@ -86,7 +86,7 @@ function assertTablesUninitialized(context) {
 
 test('generated worker artifact exactly matches all current sources and MIT notices', () => {
   assert.equal(bundle, build.renderBundle(), 'Run node scripts/build-worker.cjs after changing worker sources');
-  assert.equal(build.sources.length, 10);
+  assert.equal(build.sources.length, 12);
   for (const license of build.licenses) {
     assert(bundle.includes(fs.readFileSync(path.join(root, license), 'utf8').trimEnd()));
   }
@@ -95,7 +95,7 @@ test('generated worker artifact exactly matches all current sources and MIT noti
 test('HTTP and local-file clients only create workers, without running solvers on the page', () => {
   for (const protocol of ['https:', 'file:']) {
     const harness = client(protocol);
-    for (const name of ['CubeModel', 'CubeSolverEngine', 'CubeTwoSolver', 'CubeTwoOptimalSolver', 'NxNSolver', 'CubeLayerSolver', 'CubeShortSolver', 'Cube', 'onmessage']) {
+    for (const name of ['CubeModel', 'CubeSolverEngine', 'CubeTwoSolver', 'CubeTwoOptimalSolver', 'NxNSolver', 'CubeLayerSolver', 'CubeShortSolver', 'CubeFourReduction', 'CubeFourSolver', 'Cube', 'onmessage']) {
       assert.equal(harness.context[name], undefined, name + ' must not execute in the page');
     }
     assert.deepEqual(harness.events, []);
@@ -148,20 +148,29 @@ test('self-contained worker solves every cube size without fetching dependencies
     const result = worker.request({ id: 'short-' + size, mode: 'near-optimal', state: initial });
     assertSolution(initial, result);
     assert(result.moves.length <= 2);
+    if (size >= 4) {
+      const deep = worker.request({ id: 'deep-' + size, mode: 'deep', state: initial });
+      assertSolution(initial, deep);
+      assert(deep.moves.length <= 2);
+    }
   }
+  assert.equal(worker.request({ id: 'deep-invalid', mode: 'deep', state }).type, 'error');
+  assert.equal(worker.request({ id: 'three-phase-invalid', mode: 'three-phase', state }).type, 'error');
   assert.equal(worker.request({ id: 'unknown', mode: 'unknown', state }).type, 'error');
 });
 
-test('bundled larger-cube solving never reads a legacy history field', () => {
+test('all bundled larger-cube modes solve only the current state', () => {
   const worker = isolatedWorker();
   const state = model.solvedState(4);
   model.applyMove(state, 'R', 1, 1);
   model.applySeq(state, "U F2 L' B");
-  const request = { id: 'state-only', mode: 'near-optimal', state };
-  Object.defineProperty(request, 'history', {
-    get() { throw new Error('The bundled solver must not read move history'); }
-  });
-  assertSolution(state, worker.request(request));
+  for (const mode of ['near-optimal', 'deep', 'three-phase']) {
+    const request = { id: 'state-only-' + mode, mode, state };
+    Object.defineProperty(request, 'history', {
+      get() { throw new Error('The bundled solver must not read move history'); }
+    });
+    assertSolution(state, worker.request(request));
+  }
 });
 
 test('bundled near-optimal solver initializes search tables only when a longer solve needs them', () => {

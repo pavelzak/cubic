@@ -2,6 +2,9 @@
 
 const assert = require('node:assert/strict');
 const test = require('node:test');
+const fs = require('node:fs');
+const vm = require('node:vm');
+const { createRequire } = require('node:module');
 const model = require('../cube-model.js');
 const solver = require('../short-solver.js');
 const layerSolver = require('../layer-solver.js');
@@ -131,18 +134,20 @@ test('even-cube permutation parity is corrected before sending a reduction to th
   }
 });
 
-test('legacy extra arguments are never accessed or used to find a solution', () => {
+test('legacy extra arguments are never accessed by either search mode', () => {
   const { state } = scramble(4, 817, 30);
   let accesses = 0;
   const poison = new Proxy([], {
     get() { accesses++; throw new Error('Legacy argument must not be read'); },
     ownKeys() { accesses++; throw new Error('Legacy argument must not be enumerated'); }
   });
-  assert.equal(solver.solve.length, 4);
-  const expected = solver.solve(state, model, unavailableEngine);
-  const actual = solver.solve(state, model, unavailableEngine, undefined, poison);
-  assertSolved(state, actual);
-  assert.deepEqual(actual, expected);
+  for (const solve of [solver.solve, solver.solveDeep]) {
+    assert.equal(solve.length, 4);
+    const expected = solve(state, model, unavailableEngine);
+    const actual = solve(state, model, unavailableEngine, undefined, poison);
+    assertSolved(state, actual);
+    assert.deepEqual(actual, expected);
+  }
   assert.equal(accesses, 0);
 });
 
@@ -164,10 +169,103 @@ test('a failed state-based baseline reports its error', () => {
 });
 
 test('unsupported sizes and malformed optimizer moves are rejected', () => {
-  for (const size of [2, 3]) assert.throws(() => solver.solve(model.solvedState(size), model, engine), /4×4 through 10×10/);
+  for (const size of [2, 3]) for (const solve of [solver.solve, solver.solveDeep]) {
+    assert.throws(() => solve(model.solvedState(size), model, engine), /4×4 through 10×10/);
+  }
   for (const moves of [null, [{}], [{ face: 'R', n: 4 }], [{ face: 'U', n: 1, depth: -1 }]]) {
     assert.throws(() => solver.optimize(moves, 4, model), /Invalid/);
   }
   const { state } = scramble(4, 1);
   assert.throws(() => solver.reducedState(layerSolver.toCube(state, model), model), /not reduced|not paired/);
+});
+
+test('deep search still returns shallow state-derived solutions immediately for all sizes', () => {
+  for (let size = 4; size <= 10; size++) {
+    assert.deepEqual(solver.solveDeep(model.solvedState(size), model, unavailableEngine), []);
+    const state = model.solvedState(size);
+    model.applyMove(state, 'F', 1, Math.floor(size / 2));
+    model.applyMove(state, 'U', 3, size - 1);
+    const moves = solver.solveDeep(state, model, unavailableEngine);
+    assert(moves.length <= 2);
+    assertSolved(state, moves);
+  }
+});
+
+test('deep three-turn search solves the reported 10×10 manual setup directly', () => {
+  const state = model.solvedState(10);
+  model.applyMove(state, 'R', 1, 1);
+  model.applyMove(state, 'U', 3);
+  model.applyMove(state, 'F', 2);
+  const before = JSON.stringify(state), messages = [];
+  const moves = solver.solveDeep(state, model, unavailableEngine, message => messages.push(message));
+  assert.equal(moves.length, 3);
+  assertSolved(state, moves);
+  assert.equal(JSON.stringify(state), before);
+  assert(!messages.some(message => message.includes('reduction')));
+});
+
+test('deep three-turn search preserves commuting slices and rotated color frames on every size', () => {
+  for (let size = 4; size <= 10; size++) {
+    for (const sequence of [
+      [{ face: 'U', n: 3, depth: 0 }, { face: 'R', n: 1, depth: 0 }, { face: 'R', n: 2, depth: 1 }],
+      [{ face: 'R', n: 1, depth: 1 }, { face: 'U', n: 3, depth: 0 }, { face: 'F', n: 2, depth: 0 }],
+      [0, 1, 2].map(depth => ({ face: 'R', n: 1, depth }))
+    ]) {
+      const state = model.solvedState(size);
+      for (let depth = 0; depth < size; depth++) model.applyMove(state, 'F', 1, depth);
+      for (const move of sequence) model.applyMove(state, move.face, move.n, move.depth);
+      state.reverse();
+      for (const cubie of state) cubie.id += 1000;
+      const moves = solver.solveDeep(state, model, unavailableEngine);
+      assert(moves.length <= 3);
+      assertSolved(state, moves);
+    }
+  }
+});
+
+test('deep search continues reduction after an unsuccessful three-turn lookup', () => {
+  const { state } = scramble(4, 57), original = layerSolver.solve;
+  let reductions = 0;
+  layerSolver.solve = function (...args) { reductions++; return original(...args); };
+  try {
+    const moves = solver.solveDeep(state, model, unavailableEngine);
+    assert.equal(reductions, 1);
+    assert(moves.length > 3);
+    assertSolved(state, moves);
+  } finally { layerSolver.solve = original; }
+});
+
+for (const [size, seed] of [[4, 1], [5, 19], [10, 19]]) {
+  test(`${size}×${size} deep search improves on the fast mode with additional state-based candidates`, () => {
+    const { state } = scramble(size, seed), before = JSON.stringify(state);
+    const fast = solver.solve(state, model, engine);
+    let attempts = 0, finishes = 0;
+    const countedEngine = {
+      solveNearOptimal(reduced, progress) { finishes++; return engine.solveNearOptimal(reduced, progress); }
+    };
+    const deep = solver.solveDeep(state, model, countedEngine, message => {
+      if (message.startsWith('Deep search: comparing reductions')) attempts++;
+    });
+    assertSolved(state, deep);
+    assert(deep.length < fast.length, `${deep.length} should improve on ${fast.length}`);
+    assert(attempts > 6 && attempts <= (size % 2 ? 96 : 120));
+    assert(finishes <= attempts);
+    if (size === 5) assert(finishes < attempts, 'Repeated final-layer states must reuse their cached solutions');
+    assert.equal(JSON.stringify(state), before);
+  });
+}
+
+test('deep search stops starting candidates at its time limit and returns the verified baseline', () => {
+  let clock = 0;
+  const filename = require.resolve('../short-solver.js');
+  const context = vm.createContext({
+    module: { exports: {} }, require: createRequire(filename),
+    Date: { now() { clock += 500; return clock; } }
+  });
+  vm.runInContext(fs.readFileSync(filename, 'utf8'), context, { filename });
+  const { state } = scramble(4, 57), baseline = layerSolver.solve(state, model);
+  const moves = context.module.exports.solveDeep(state, model, unavailableEngine);
+  assertSolved(state, moves);
+  assert(moves.length <= baseline.length);
+  assert(clock >= 10000 && clock < 15000, 'The search must stop after the simulated budget expires');
 });

@@ -185,6 +185,8 @@
           <select id="solverMode" aria-describedby="solverNote">
             <option value="layer">Layer by layer</option>
             <option id="nearOptimalMode" value="near-optimal">Near-optimal</option>
+            <option id="deepMode" value="deep" hidden disabled>Deep search</option>
+            <option id="threePhaseMode" value="three-phase" hidden disabled>Three-phase</option>
           </select>
         </label>
       </div>
@@ -204,12 +206,12 @@
       Drag a slice to turn it, or the background to look around. Notation stays fixed when you rotate the view.
     </p>
   </div>
-  <footer class="version" aria-label="Application version">v1.4.1</footer>
+  <footer class="version" aria-label="Application version">v1.5.0</footer>
 </div>
 
 <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
-<script src="cube-model.js?v=1.4.1"></script>
-<script src="solver-worker-client.js?v=1.4.1"></script>
+<script src="cube-model.js?v=1.5.0"></script>
+<script src="solver-worker-client.js?v=1.5.0"></script>
 <script>
 (function () {
 'use strict';
@@ -413,6 +415,8 @@ var cubeSizeEl = document.getElementById('cubeSize');
 var layerDepth = document.getElementById('layerDepth');
 var solverMode = document.getElementById('solverMode');
 var nearOptimalMode = document.getElementById('nearOptimalMode');
+var deepMode = document.getElementById('deepMode');
+var threePhaseMode = document.getElementById('threePhaseMode');
 var solverNote = document.getElementById('solverNote');
 var solverWorker = null, solveRequest = null, nextSolveId = 0;
 
@@ -561,20 +565,39 @@ function shortSolverLabel(puzzleSize) {
   return puzzleSize === 2 ? 'Optimal' : puzzleSize === 3 ? 'Near-optimal' : 'Shorter solution';
 }
 
+function solverLabel(mode, puzzleSize) {
+  if (mode === 'layer') return 'Layer by layer';
+  if (mode === 'deep') return 'Deep search';
+  if (mode === 'three-phase') return 'Three-phase';
+  return shortSolverLabel(puzzleSize);
+}
+
 function updateSolverNote() {
   nearOptimalMode.disabled = false;
   nearOptimalMode.textContent = shortSolverLabel(size);
-  solverNote.textContent = solverMode.value === 'near-optimal'
-    ? size === 2
+  deepMode.hidden = deepMode.disabled = size < 4;
+  threePhaseMode.hidden = threePhaseMode.disabled = size !== 4;
+  if ((solverMode.value === 'deep' && deepMode.disabled) ||
+      (solverMode.value === 'three-phase' && threePhaseMode.disabled)) {
+    solverMode.value = 'near-optimal';
+  }
+  if (solverMode.value === 'deep') {
+    solverNote.textContent = 'Spends longer searching for a shorter solution from the current cube. The fewest moves are not guaranteed.';
+  } else if (solverMode.value === 'three-phase') {
+    solverNote.textContent = 'Specialized 4×4 search for short solutions. The fewest moves are not guaranteed; initial tables may take a few seconds.';
+  } else if (solverMode.value === 'near-optimal') {
+    solverNote.textContent = size === 2
       ? 'Finds the fewest moves; each quarter-turn or half-turn counts as one move.'
       : size === 3
         ? 'Finds short solutions quickly; the absolute fewest moves are not guaranteed.'
-        : 'Computes a shorter solution from the current cube. The fewest moves are not guaranteed.'
-    : size === 2
+        : 'Computes a shorter solution from the current cube. The fewest moves are not guaranteed.';
+  } else {
+    solverNote.textContent = size === 2
       ? 'Solves the bottom layer, then orients and places the top corners.'
       : size === 3
         ? 'Solves the cross, corners, middle layer, then the top.'
         : 'Solves centers and pairs edges, handles parity, then solves the layers. Large cubes can take thousands of turns.';
+  }
 }
 solverMode.addEventListener('change', updateSolverNote);
 
@@ -622,7 +645,7 @@ function playSolution(moves, request) {
   if (!isSolvedState(check)) throw new Error('The returned moves do not solve this cube.');
 
   solveRequest = null;
-  var label = request.mode === 'layer' ? 'Layer by layer' : shortSolverLabel(request.size);
+  var label = solverLabel(request.mode, request.size);
   var list = moves.map(function (m) {
     return faceMove(m.face, m.n, m.depth);
   });

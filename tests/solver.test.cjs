@@ -136,7 +136,7 @@ test('verification rejects incorrect or malformed solutions', () => {
   assert.doesNotThrow(() => adapter.verifySolution(inner, [{ face: 'R', n: 3, depth: 2 }], model));
 });
 
-test('worker routes both modes, loads the vendor lazily, and preserves request IDs', () => {
+test('worker routes solver modes, loads vendors lazily, and preserves request IDs', () => {
   const root = path.resolve(__dirname, '..');
   const messages = [];
   const imports = [];
@@ -214,4 +214,24 @@ test('worker routes both modes, loads the vendor lazily, and preserves request I
   assert.equal(imports.filter(filename => filename === 'two-optimal-solver.js').length, 1);
   assert.equal(imports.filter(filename => filename === 'short-solver.js').length, 1);
   assert.equal(imports.filter(filename => filename === 'vendor/cubejs/cube.js').length, 1);
+
+  for (const mode of ['deep', 'three-phase']) {
+    const request = { id: mode + '-state-only', mode, state: largeState };
+    Object.defineProperty(request, 'history', {
+      get() { throw new Error('The new modes must not read move history'); }
+    });
+    context.onmessage({ data: request });
+    const result = messages.at(-1);
+    assert.equal(result.type, 'result', result.message);
+    assert.equal(result.id, request.id);
+    replay(largeState, result.moves);
+  }
+  assert.equal(imports.filter(filename => filename === 'vendor/four-solver/solver.js').length, 1);
+  assert.equal(imports.filter(filename => filename === 'four-solver.js').length, 1);
+  for (const [mode, size] of [['deep', 2], ['deep', 3], ['three-phase', 3], ['three-phase', 5]]) {
+    context.onmessage({ data: { id: 'unsupported', mode, state: model.solvedState(size) } });
+    const result = messages.at(-1);
+    assert.equal(result.type, 'error');
+    assert.match(result.message, /supports/);
+  }
 });

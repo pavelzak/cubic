@@ -136,6 +136,33 @@ function shortSolution(state, size, model) {
   return best;
 }
 
+function threeTurnSolution(state, size, model) {
+  // The one-turn goal table was populated by shortSolution. Meet it with
+  // two turns from the current state instead of generating all three plies.
+  const table = shortTables.get(size);
+  const candidates = table.moves.map(move => {
+    const normal = model.N[move.face], axis = normal.findIndex(value => value !== 0);
+    return { move, axis, depth: normal[axis] > 0 ? move.depth : size - move.depth - 1 };
+  });
+  for (const first of candidates) {
+    const prefix = model.cloneState(state), a = first.move;
+    model.applyMove(prefix, a.face, a.n, a.depth);
+    for (const second of candidates) {
+      // Same-layer turns combine; different parallel layers commute, so
+      // keep one ordering while preserving genuine three-layer solutions.
+      if (first.axis === second.axis && second.depth <= first.depth) continue;
+      const next = model.cloneState(prefix), b = second.move;
+      model.applyMove(next, b.face, b.n, b.depth);
+      const final = table.states.get(patternKey(next, model));
+      if (final) {
+        const result = optimize([a, b, final], size, model);
+        if (solves(state, result, model)) return result;
+      }
+    }
+  }
+  return null;
+}
+
 function reducedState(cube, model) {
   const end = cube.size - 1, positions = [0, 1, end];
   for (const face of cube.matrix) {
@@ -195,7 +222,33 @@ function correctParity(cube) {
   cube.turn('U', 2, half, inner);
 }
 
-function solve(state, model, nearOptimalEngine, onProgress) {
+function searchPlans(size, deep) {
+  const first = [[], [['R', 1]], [['R', 2]], [['R', 3]], [['F', 1]], [['F', 3]]];
+  if (!deep) return first.map(turns => ({ turns }));
+
+  // Try the fast mode's six orientations first, then each remaining orientation.
+  const orientations = [], seen = new Set();
+  function add(turns) {
+    const cube = new vendor.Cube(1);
+    for (const [face, n] of turns) cube.turn(face, n, 1, 1);
+    const key = cube.matrix.map(face => face[0][0]).join('');
+    if (!seen.has(key)) { seen.add(key); orientations.push(turns); }
+  }
+  for (const turns of first) add(turns);
+  for (const turns of first) for (let spin = 1; spin < 4; spin++) add(turns.concat([['U', spin]]));
+  const plans = orientations.map(turns => ({ turns }));
+  for (let i = 0; i < orientations.length; i++) {
+    const turns = orientations[i];
+    // A counted setup turn changes the greedy center/edge reduction path.
+    for (const face of ['R', 'U', 'F']) plans.push({ turns, setup: [face, 1] });
+    // Even cubes can also choose a different valid target color arrangement.
+    // On odd cubes the fixed center colors already determine those targets.
+    if (size % 2 === 0) plans.push({ turns, palette: [['R', 'U', 'F'][i % 3], 1] });
+  }
+  return plans;
+}
+
+function solveWithOptions(state, model, nearOptimalEngine, onProgress, deep) {
   const size = model.cubeSize(state);
   if (size < 4 || size > 10) throw new Error('Shorter solving supports 4×4 through 10×10.');
   if (model.isSolved(state)) return [];
@@ -203,6 +256,10 @@ function solve(state, model, nearOptimalEngine, onProgress) {
   onProgress('Checking for a short solution…');
   const short = shortSolution(state, size, model);
   if (short) return short;
+  if (deep) {
+    const three = threeTurnSolution(state, size, model);
+    if (three) return three;
+  }
 
   onProgress('Building and simplifying a reduction solution…');
   let best = optimize(layerSolver.solve(state, model), size, model);
@@ -210,18 +267,29 @@ function solve(state, model, nearOptimalEngine, onProgress) {
 
   // Keep a verified result before searching alternative reduction orders.
   // Worker termination remains immediate if the user presses Stop.
-  const deadline = Date.now() + 2000;
-  const orientations = [null, ['R', 1], ['R', 2], ['R', 3], ['F', 1], ['F', 3]];
-  for (let attempt = 0; attempt < orientations.length && Date.now() < deadline; attempt++) {
-    onProgress('Comparing shorter reductions (' + (attempt + 1) + '/' + orientations.length + ')…');
+  const deadline = Date.now() + (deep ? 10000 : 2000);
+  const plans = searchPlans(size, deep), finishCache = deep ? new Map() : null;
+  for (let attempt = 0; attempt < plans.length && Date.now() < deadline; attempt++) {
+    onProgress((deep ? 'Deep search: comparing reductions (' : 'Comparing shorter reductions (') +
+      (attempt + 1) + '/' + plans.length + ')…');
     try {
       const cube = layerSolver.toCube(state, model), raw = [];
+      let finishing = false;
       cube.onTurn = function (face, dist, layer, width) {
-        if (Date.now() > deadline || raw.length > 100000) throw new Error('Shorter-solution search limit.');
+        if ((!finishing && Date.now() > deadline) || raw.length > 100000) throw new Error('Shorter-solution search limit.');
         raw.push(...layerSolver.movesForTurn(size, face, dist, layer, width));
       };
-      const orientation = orientations[attempt];
-      if (orientation) cube.turn(orientation[0], orientation[1], size, size);
+      const plan = plans[attempt];
+      if (plan.palette) {
+        const palette = new vendor.Cube(1);
+        palette.turn(plan.palette[0], plan.palette[1], 1, 1);
+        const colors = palette.matrix.map(face => face[0][0]);
+        for (const face of cube.matrix) for (const row of face) {
+          for (let col = 0; col < row.length; col++) row[col] = colors[row[col]];
+        }
+      }
+      if (plan.setup) cube.turn(plan.setup[0], plan.setup[1], 1, 1);
+      for (const [face, n] of plan.turns) cube.turn(face, n, size, size);
       vendor.solveCenters(cube);
       vendor.solveEdges(cube);
       let reduced = reducedState(cube, model);
@@ -231,7 +299,15 @@ function solve(state, model, nearOptimalEngine, onProgress) {
         reduced = reducedState(cube, model);
         if (reductionParity(reduced, model)) throw new Error('Parity correction did not finish.');
       }
-      const finish = nearOptimalEngine.solveNearOptimal(reduced, onProgress);
+      // Finish a search already in progress even if initialization crossed the
+      // time budget; its verified result is preferable to discarding that work.
+      finishing = true;
+      const key = finishCache && adapter.toFacelets(reduced, model);
+      let finish = finishCache && finishCache.get(key);
+      if (!finish) {
+        finish = nearOptimalEngine.solveNearOptimal(reduced, onProgress);
+        if (finishCache) finishCache.set(key, finish);
+      }
       for (const move of finish) cube.turn(move.face, move.n, 1, 1);
       if (!cube.isSolved()) throw new Error('The reduced finish did not solve this cube.');
       const candidate = optimize(raw, size, model);
@@ -241,5 +317,13 @@ function solve(state, model, nearOptimalEngine, onProgress) {
   return best;
 }
 
-return { solve, optimize, reducedState };
+function solve(state, model, nearOptimalEngine, onProgress) {
+  return solveWithOptions(state, model, nearOptimalEngine, onProgress, false);
+}
+
+function solveDeep(state, model, nearOptimalEngine, onProgress) {
+  return solveWithOptions(state, model, nearOptimalEngine, onProgress, true);
+}
+
+return { solve, solveDeep, optimize, reducedState };
 });

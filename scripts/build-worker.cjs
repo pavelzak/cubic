@@ -15,9 +15,11 @@ const sources = [
   'vendor/cubejs/cube.js',
   'vendor/cubejs/solve.js',
   'short-solver.js',
+  'vendor/four-solver/solver.js',
+  'four-solver.js',
   'solver-worker.js'
 ];
-const licenses = ['vendor/cubejs/LICENSE', 'vendor/nxn-solver/LICENSE'];
+const licenses = ['vendor/cubejs/LICENSE', 'vendor/nxn-solver/LICENSE', 'vendor/four-solver/LICENSE'];
 
 function renderBundle() {
   const notices = licenses.map(file =>

@@ -74,6 +74,9 @@ function app(options = {}) {
   element('layerDepth').value = '0';
   element('btnReset').textContent = 'Reset';
   element('historyReel').hidden = false;
+  for (const id of ['deepMode', 'threePhaseMode']) {
+    element(id).hidden = element(id).disabled = true;
+  }
   const document = {
     activeElement: null,
     getElementById: element,
@@ -159,6 +162,13 @@ function assertUnlocked(instance) {
   }
   assert.equal(instance.element('nearOptimalMode').disabled, false,
     'The shorter-solution option should be available for every size');
+  for (const [id, supported] of [
+    ['deepMode', instance.snapshot().size >= 4],
+    ['threePhaseMode', instance.snapshot().size === 4]
+  ]) {
+    assert.equal(instance.element(id).disabled, !supported);
+    assert.equal(instance.element(id).hidden, !supported);
+  }
   assert(instance.element('keys').children.every(button => !button.disabled));
   assert.equal(instance.element('btnReset').textContent, 'Reset');
 }
@@ -523,8 +533,84 @@ test('the shorter-solution mode plays results with the correct label on every si
   }
 });
 
+test('additional search modes are offered only for supported sizes and fall back when necessary', () => {
+  const instance = app();
+  for (let size = 2; size <= 10; size++) {
+    instance.changeSize(size);
+    assertUnlocked(instance);
+  }
+  instance.element('solverMode').value = 'deep';
+  for (const size of [4, 5, 6, 7, 8, 9, 10, 4]) {
+    instance.changeSize(size);
+    assert.equal(instance.element('solverMode').value, 'deep');
+    assert.match(instance.element('solverNote').textContent, /longer.*shorter solution.*current cube/i);
+    assert.match(instance.element('solverNote').textContent, /fewest moves are not guaranteed/i);
+  }
+  for (const size of [2, 3]) {
+    instance.changeSize(4);
+    instance.element('solverMode').value = 'deep';
+    instance.changeSize(size);
+    assert.equal(instance.element('solverMode').value, 'near-optimal');
+    assertUnlocked(instance);
+  }
+  instance.changeSize(4);
+  instance.element('solverMode').value = 'three-phase';
+  instance.element('solverMode').listeners.change();
+  assert.match(instance.element('solverNote').textContent, /specialized 4×4.*short solutions/i);
+  assert.match(instance.element('solverNote').textContent, /fewest moves are not guaranteed/i);
+  assert.match(instance.element('solverNote').textContent, /initial tables.*few seconds/i);
+  instance.changeSize(4);
+  assert.equal(instance.element('solverMode').value, 'three-phase');
+  for (const size of [2, 3, 5, 6, 7, 8, 9, 10]) {
+    instance.changeSize(4);
+    instance.element('solverMode').value = 'three-phase';
+    instance.changeSize(size);
+    assert.equal(instance.element('solverMode').value, 'near-optimal');
+    assertUnlocked(instance);
+  }
+});
+
+test('additional search modes send state-only requests and use their own playback labels', () => {
+  for (const [mode, label, sizes] of [
+    ['deep', 'Deep search', [4, 5, 6, 7, 8, 9, 10]],
+    ['three-phase', 'Three-phase', [4]]
+  ]) for (const size of sizes) {
+    const instance = app();
+    instance.changeSize(size);
+    instance.element('solverMode').value = mode;
+    const depth = Math.floor((size - 1) / 2);
+    instance.turn('R', 1, depth); instance.finish();
+    instance.click('btnSolve');
+    const request = instance.workers.at(-1).messages.at(-1);
+    assert.deepEqual(Object.keys(request).sort(), ['id', 'mode', 'state']);
+    assert.equal(request.mode, mode);
+    assert.deepEqual(request.state, instance.snapshot().state);
+    instance.result([{ face: 'R', n: 3, depth }]);
+    assert.equal(instance.snapshot().status, label + ': playing 1 turns.');
+    instance.finish();
+    assert.equal(instance.snapshot().status, 'Solved in 1 turns (' + label.toLowerCase() + ').');
+    assert.equal(instance.snapshot().solved, true);
+    assertUnlocked(instance);
+  }
+});
+
+test('an unsupported mode set programmatically falls back before starting a worker request', () => {
+  for (const [mode, size] of [['deep', 2], ['deep', 3], ['three-phase', 3], ['three-phase', 10]]) {
+    const instance = app();
+    instance.changeSize(size);
+    instance.element('solverMode').value = mode;
+    instance.turn('U', 1); instance.finish();
+    instance.click('btnSolve');
+    assert.equal(instance.element('solverMode').value, 'near-optimal');
+    assert.equal(instance.workers[0].messages[0].mode, 'near-optimal');
+    instance.click('btnReset');
+    assertUnlocked(instance);
+  }
+});
+
 test('every solver receives only the current cube after rewind and branches on its first committed turn', () => {
-  for (const mode of ['layer', 'near-optimal']) for (let size = 2; size <= 10; size++) {
+  for (const mode of ['layer', 'near-optimal', 'deep', 'three-phase']) for (let size = 2; size <= 10; size++) {
+    if ((mode === 'deep' && size < 4) || (mode === 'three-phase' && size !== 4)) continue;
     const instance = app();
     instance.changeSize(size);
     const depth = Math.floor((size - 1) / 2);
@@ -572,31 +658,37 @@ test('every solver receives only the current cube after rewind and branches on i
   }
 });
 
-test('a shorter-solution error preserves future history and permits a new large-cube request', () => {
-  const instance = app();
-  instance.changeSize(10);
-  instance.turn('U', 1, 4); instance.finish();
-  instance.turn('F', 2, 3); instance.finish();
-  instance.travel(1); instance.finish();
-  instance.element('solverMode').value = 'near-optimal';
-  instance.click('btnSolve');
-  const oldWorker = instance.workers[0];
-  oldWorker.reply({ id: oldWorker.messages[0].id, type: 'error', message: 'Search interrupted' });
-  assert.equal(instance.snapshot().historyCursor, 1);
-  assert.equal(instance.snapshot().historyMoves.length, 2);
-  assertUnlocked(instance);
-  instance.click('btnSolve');
-  const currentWorker = instance.workers[1];
-  assert.deepEqual(Object.keys(currentWorker.messages[0]).sort(), ['id', 'mode', 'state']);
-  assert.deepEqual(currentWorker.messages[0].state, instance.snapshot().state);
-  instance.result([{ face: 'U', n: 3, depth: 4 }], oldWorker);
-  assert.equal(instance.animations.length, 0, 'Old results must not interrupt the new request');
-  instance.result([{ face: 'U', n: 3, depth: 4 }], currentWorker);
-  instance.finish();
-  assert.equal(instance.snapshot().solved, true);
-  assert.deepEqual(instance.snapshot().historyMoves.map(move => move.name), ['5U', "5U'"]);
-  assert.match(instance.snapshot().status, /shorter solution/);
-  assertUnlocked(instance);
+test('a search error preserves future history and permits a new request in every large-cube search mode', () => {
+  for (const [mode, size, depth, label] of [
+    ['near-optimal', 10, 4, 'shorter solution'],
+    ['deep', 10, 4, 'deep search'],
+    ['three-phase', 4, 1, 'three-phase']
+  ]) {
+    const instance = app();
+    instance.changeSize(size);
+    instance.turn('U', 1, depth); instance.finish();
+    instance.turn('F', 2, 0); instance.finish();
+    instance.travel(1); instance.finish();
+    instance.element('solverMode').value = mode;
+    instance.click('btnSolve');
+    const oldWorker = instance.workers[0];
+    oldWorker.reply({ id: oldWorker.messages[0].id, type: 'error', message: 'Search interrupted' });
+    assert.equal(instance.snapshot().historyCursor, 1);
+    assert.equal(instance.snapshot().historyMoves.length, 2);
+    assertUnlocked(instance);
+    instance.click('btnSolve');
+    const currentWorker = instance.workers[1];
+    assert.deepEqual(Object.keys(currentWorker.messages[0]).sort(), ['id', 'mode', 'state']);
+    assert.deepEqual(currentWorker.messages[0].state, instance.snapshot().state);
+    instance.result([{ face: 'U', n: 3, depth }], oldWorker);
+    assert.equal(instance.animations.length, 0, 'Old results must not interrupt the new request');
+    instance.result([{ face: 'U', n: 3, depth }], currentWorker);
+    instance.finish();
+    assert.equal(instance.snapshot().solved, true);
+    assert.deepEqual(instance.snapshot().historyMoves.map(move => move.name), [`${depth + 1}U`, `${depth + 1}U'`]);
+    assert(instance.snapshot().status.includes(label));
+    assertUnlocked(instance);
+  }
 });
 
 test('inner-layer solver results preserve depth, notation, and navigable history on every size', () => {

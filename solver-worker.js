@@ -58,6 +58,16 @@ self.onmessage = function (event) {
         if (typeof CubeShortSolver === 'undefined') importScripts('short-solver.js');
         moves = CubeShortSolver.solve(request.state, CubeModel, loadNearOptimalEngine(progress), progress);
       }
+    } else if (request.mode === 'deep') {
+      if (size < 4 || size > 10) throw new Error('Deep search supports 4×4 through 10×10.');
+      loadLargeSolver();
+      if (typeof CubeShortSolver === 'undefined') importScripts('short-solver.js');
+      moves = CubeShortSolver.solveDeep(request.state, CubeModel, loadNearOptimalEngine(progress), progress);
+    } else if (request.mode === 'three-phase') {
+      if (size !== 4) throw new Error('Three-phase solving supports 4×4 only.');
+      if (typeof CubeFourReduction === 'undefined') importScripts('vendor/four-solver/solver.js');
+      if (typeof CubeFourSolver === 'undefined') importScripts('four-solver.js');
+      moves = CubeFourSolver.solve(request.state, CubeModel, loadNearOptimalEngine(progress), progress);
     } else {
       throw new Error('Unknown solver mode.');
     }
