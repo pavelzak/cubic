@@ -204,12 +204,12 @@
       Drag a slice to turn it, or the background to look around. Notation stays fixed when you rotate the view.
     </p>
   </div>
-  <footer class="version" aria-label="Application version">v1.4.0</footer>
+  <footer class="version" aria-label="Application version">v1.4.1</footer>
 </div>
 
 <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
-<script src="cube-model.js?v=1.4.0"></script>
-<script src="solver-worker-client.js?v=1.4.0"></script>
+<script src="cube-model.js?v=1.4.1"></script>
+<script src="solver-worker-client.js?v=1.4.1"></script>
 <script>
 (function () {
 'use strict';
@@ -569,7 +569,7 @@ function updateSolverNote() {
       ? 'Finds the fewest moves; each quarter-turn or half-turn counts as one move.'
       : size === 3
         ? 'Finds short solutions quickly; the absolute fewest moves are not guaranteed.'
-        : 'Looks for a shorter solution and may use your move history. The fewest moves are not guaranteed.'
+        : 'Computes a shorter solution from the current cube. The fewest moves are not guaranteed.'
     : size === 2
       ? 'Solves the bottom layer, then orients and places the top corners.'
       : size === 3
@@ -645,11 +645,6 @@ btnSolve.addEventListener('click', function () {
   setBusy(true);
   elStatus.textContent = 'Working out a solution…';
   solveRequest = { id: ++nextSolveId, mode: solverMode.value, size: size, initial: cloneState(state) };
-  if (solveRequest.mode === 'near-optimal' && size >= 4) {
-    solveRequest.history = historyMoves.slice(0, historyCursor).map(function (move) {
-      return { face: move.face, n: move.n, depth: move.depth };
-    });
-  }
   try {
     if (!solverWorker) {
       var worker = CubeSolverWorker.create();
@@ -674,9 +669,7 @@ btnSolve.addEventListener('click', function () {
         if (worker === solverWorker && solveRequest) failSolve('The solver returned an unreadable response.');
       };
     }
-    var message = { id: solveRequest.id, mode: solveRequest.mode, state: solveRequest.initial };
-    if (solveRequest.history !== undefined) message.history = solveRequest.history;
-    solverWorker.postMessage(message);
+    solverWorker.postMessage({ id: solveRequest.id, mode: solveRequest.mode, state: solveRequest.initial });
   } catch (err) {
     failSolve(err.message);
   }

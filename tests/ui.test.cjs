@@ -464,7 +464,8 @@ test('every size can request and play a layer-by-layer worker solution', () => {
     const request = instance.workers.at(-1).messages.at(-1);
     assert.equal(request.mode, 'layer');
     assert.equal(CubeModel.cubeSize(request.state), size);
-    assert.equal(Object.hasOwn(request, 'history'), false, 'Layer solving should receive only the current state');
+    assert.deepEqual(Object.keys(request).sort(), ['id', 'mode', 'state']);
+    assert.deepEqual(request.state, instance.snapshot().state);
     instance.result([{ face: 'U', n: 3, depth: 0 }]);
     instance.finish();
     assert.equal(instance.snapshot().solved, true);
@@ -488,7 +489,10 @@ test('size changes preserve the selected mode and label the shorter-solution opt
           assert.match(note, /quarter.turn.*half.turn.*one move/i);
         } else {
           assert.match(note, /fewest moves are not guaranteed/i);
-          if (size >= 4) assert.match(note, /history/i);
+          if (size >= 4) {
+            assert.match(note, /from the current cube/i);
+            assert.doesNotMatch(note, /history/i);
+          }
         }
       }
       assertUnlocked(instance);
@@ -507,8 +511,8 @@ test('the shorter-solution mode plays results with the correct label on every si
     const request = instance.workers.at(-1).messages.at(-1);
     assert.equal(request.mode, 'near-optimal');
     assert.equal(CubeModel.cubeSize(request.state), size);
-    if (size >= 4) assert.deepEqual(request.history, [{ face: 'U', n: 1, depth }]);
-    else assert.equal(Object.hasOwn(request, 'history'), false);
+    assert.deepEqual(Object.keys(request).sort(), ['id', 'mode', 'state']);
+    assert.deepEqual(request.state, instance.snapshot().state);
     instance.result([{ face: 'U', n: 3, depth }]);
     const label = size === 2 ? 'Optimal' : size === 3 ? 'Near-optimal' : 'Shorter solution';
     assert.equal(instance.snapshot().status, label + ': playing 1 turns.');
@@ -519,8 +523,8 @@ test('the shorter-solution mode plays results with the correct label on every si
   }
 });
 
-test('large-cube shorter requests include only the committed history prefix after rewind', () => {
-  for (const size of [4, 5, 10]) {
+test('every solver receives only the current cube after rewind and branches on its first committed turn', () => {
+  for (const mode of ['layer', 'near-optimal']) for (let size = 2; size <= 10; size++) {
     const instance = app();
     instance.changeSize(size);
     const depth = Math.floor((size - 1) / 2);
@@ -530,20 +534,40 @@ test('large-cube shorter requests include only the committed history prefix afte
     instance.turn('R', 3, depth); instance.finish();
     const futureState = instance.snapshot().state;
     instance.travel(2); instance.finish();
-    instance.element('solverMode').value = 'near-optimal';
+    instance.element('solverMode').value = mode;
     instance.click('btnSolve');
     const worker = instance.workers.at(-1);
     const request = worker.messages.at(-1);
     assert.deepEqual(request.state, prefixState);
-    assert.deepEqual(request.history, [{ face: 'U', n: 1, depth }, { face: 'F', n: 2, depth: 0 }]);
-    assert(request.history.every(move => Object.keys(move).sort().join(',') === 'depth,face,n'));
+    assert.deepEqual(Object.keys(request).sort(), ['id', 'mode', 'state']);
+    assert.equal(request.mode, mode);
     assert.equal(instance.snapshot().historyMoves.length, 3, 'The future stays available while searching');
     instance.click('btnReset');
     instance.result([{ face: 'F', n: 2, depth: 0 }, { face: 'U', n: 3, depth }], worker);
     assert.deepEqual(instance.snapshot().state, prefixState, 'Canceled replies must not change the current prefix');
     instance.travel(3); instance.finish();
     assert.deepEqual(instance.snapshot().state, futureState);
-    assert.equal(request.history.length, 2, 'A sent history snapshot must not grow with later navigation');
+    assert.deepEqual(request.state, prefixState, 'A sent cube snapshot must not change with later navigation');
+    assertUnlocked(instance);
+    instance.travel(2); instance.finish();
+    const retainedHistory = instance.snapshot().historyMoves;
+    instance.click('btnSolve');
+    const nextRequest = instance.workers.at(-1).messages.at(-1);
+    assert.deepEqual(Object.keys(nextRequest).sort(), ['id', 'mode', 'state']);
+    assert.deepEqual(nextRequest.state, prefixState);
+    instance.result([{ face: 'F', n: 2, depth: 0 }, { face: 'U', n: 3, depth }]);
+    assert.deepEqual(instance.snapshot().state, prefixState);
+    assert.deepEqual(instance.snapshot().historyMoves, retainedHistory,
+      'The future stays available until the first solution turn lands');
+    instance.completeTurn();
+    assert.equal(instance.snapshot().historyCursor, 3);
+    assert.deepEqual(instance.snapshot().historyMoves.slice(0, 2), retainedHistory.slice(0, 2));
+    assert.deepEqual(instance.snapshot().historyMoves[2], { face: 'F', n: 2, depth: 0, name: 'F2' });
+    instance.finish();
+    assert.equal(instance.snapshot().solved, true);
+    assert.equal(instance.snapshot().historyCursor, 4);
+    assert.equal(instance.snapshot().historyMoves.length, 4);
+    assert.deepEqual(nextRequest.state, prefixState);
     assertUnlocked(instance);
   }
 });
@@ -563,7 +587,8 @@ test('a shorter-solution error preserves future history and permits a new large-
   assertUnlocked(instance);
   instance.click('btnSolve');
   const currentWorker = instance.workers[1];
-  assert.deepEqual(currentWorker.messages[0].history, [{ face: 'U', n: 1, depth: 4 }]);
+  assert.deepEqual(Object.keys(currentWorker.messages[0]).sort(), ['id', 'mode', 'state']);
+  assert.deepEqual(currentWorker.messages[0].state, instance.snapshot().state);
   instance.result([{ face: 'U', n: 3, depth: 4 }], oldWorker);
   assert.equal(instance.animations.length, 0, 'Old results must not interrupt the new request');
   instance.result([{ face: 'U', n: 3, depth: 4 }], currentWorker);

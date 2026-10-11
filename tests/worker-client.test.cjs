@@ -140,16 +140,28 @@ test('self-contained worker solves every cube size without fetching dependencies
   assertTablesUninitialized(worker.context);
   for (const size of [2, 4, 5, 6, 7, 8, 9, 10]) {
     const initial = model.solvedState(size);
-    const history = [
+    const scrambleMoves = [
       { face: 'R', n: 1, depth: size > 3 ? 1 : 0 },
       { face: 'U', n: 3, depth: 0 }
     ];
-    for (const move of history) model.applyMove(initial, move.face, move.n, move.depth);
-    const result = worker.request({ id: 'short-' + size, mode: 'near-optimal', state: initial, history });
+    for (const move of scrambleMoves) model.applyMove(initial, move.face, move.n, move.depth);
+    const result = worker.request({ id: 'short-' + size, mode: 'near-optimal', state: initial });
     assertSolution(initial, result);
     assert(result.moves.length <= 2);
   }
   assert.equal(worker.request({ id: 'unknown', mode: 'unknown', state }).type, 'error');
+});
+
+test('bundled larger-cube solving never reads a legacy history field', () => {
+  const worker = isolatedWorker();
+  const state = model.solvedState(4);
+  model.applyMove(state, 'R', 1, 1);
+  model.applySeq(state, "U F2 L' B");
+  const request = { id: 'state-only', mode: 'near-optimal', state };
+  Object.defineProperty(request, 'history', {
+    get() { throw new Error('The bundled solver must not read move history'); }
+  });
+  assertSolution(state, worker.request(request));
 });
 
 test('bundled near-optimal solver initializes search tables only when a longer solve needs them', () => {

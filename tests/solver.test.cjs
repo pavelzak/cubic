@@ -184,23 +184,28 @@ test('worker routes both modes, loads the vendor lazily, and preserves request I
 
   for (const size of [2, 4, 5, 6, 7, 8, 9, 10]) {
     const initial = model.solvedState(size);
-    const history = [
+    const scrambleMoves = [
       { face: 'R', n: 1, depth: size > 3 ? 1 : 0 },
       { face: 'U', n: 3, depth: 0 }
     ];
-    for (const move of history) model.applyMove(initial, move.face, move.n, move.depth);
+    for (const move of scrambleMoves) model.applyMove(initial, move.face, move.n, move.depth);
     const id = `${size}-short`;
-    context.onmessage({ data: { id, mode: 'near-optimal', state: initial, history } });
+    context.onmessage({ data: { id, mode: 'near-optimal', state: initial } });
     const result = messages.at(-1);
     assert.equal(result.type, 'result', `${size}×${size}: ${result.message}`);
     assert.equal(result.id, id);
-    assert(result.moves.length <= history.length, 'The short mode should retain a shorter verified candidate');
+    assert(result.moves.length <= 2, 'A two-turn position should be recognized from its current state');
     replay(initial, result.moves);
   }
   const largeState = model.solvedState(4);
   model.applyMove(largeState, 'R', 1, 1);
   model.applyMove(largeState, 'U', 3);
-  context.onmessage({ data: { id: 'large-without-history', mode: 'near-optimal', state: largeState } });
+  model.applyMove(largeState, 'F', 2);
+  const request = { id: 'large-state-only', mode: 'near-optimal', state: largeState };
+  Object.defineProperty(request, 'history', {
+    get() { throw new Error('The worker must not read move history'); }
+  });
+  context.onmessage({ data: request });
   const largeResult = messages.at(-1);
   assert.equal(largeResult.type, 'result', largeResult.message);
   replay(largeState, largeResult.moves);

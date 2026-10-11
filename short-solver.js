@@ -195,7 +195,7 @@ function correctParity(cube) {
   cube.turn('U', 2, half, inner);
 }
 
-function solve(state, model, nearOptimalEngine, onProgress, history) {
+function solve(state, model, nearOptimalEngine, onProgress) {
   const size = model.cubeSize(state);
   if (size < 4 || size > 10) throw new Error('Shorter solving supports 4×4 through 10×10.');
   if (model.isSolved(state)) return [];
@@ -204,26 +204,9 @@ function solve(state, model, nearOptimalEngine, onProgress, history) {
   const short = shortSolution(state, size, model);
   if (short) return short;
 
-  let best = null;
-  if (Array.isArray(history)) {
-    try {
-      const inverse = history.slice().reverse().map(move => {
-        const depth = validateMove(move, size, model);
-        return { face: move.face, depth, n: 4 - move.n };
-      });
-      const candidate = optimize(inverse, size, model);
-      if (solves(state, candidate, model)) best = candidate;
-    } catch (_) { /* Unusable history cannot affect state-based solving. */ }
-  }
-
   onProgress('Building and simplifying a reduction solution…');
-  try {
-    const baseline = optimize(layerSolver.solve(state, model), size, model);
-    if (!solves(state, baseline, model)) throw new Error('The shorter solution failed verification.');
-    if (!best || baseline.length < best.length) best = baseline;
-  } catch (error) {
-    if (!best) throw error;
-  }
+  let best = optimize(layerSolver.solve(state, model), size, model);
+  if (!solves(state, best, model)) throw new Error('The shorter solution failed verification.');
 
   // Keep a verified result before searching alternative reduction orders.
   // Worker termination remains immediate if the user presses Stop.

@@ -18,18 +18,18 @@ The second mode depends on the selected size:
 - **Optimal (2×2)** finds the fewest face turns, allowing any solved orientation.
 - **Near-optimal (3×3)** finds short solutions using Kociemba's two-phase algorithm.
   It does not guarantee the absolute fewest moves.
-- **Shorter solution (4×4–10×10)** compares shortened, verified solutions. It can
-  also use recorded moves as another candidate. This is a best-effort mode,
-  with no claim of optimality or closeness to the minimum.
+- **Shorter solution (4×4–10×10)** compares shortened, verified solutions computed
+  from the current sticker positions. This is a best-effort mode, with no claim
+  of optimality or closeness to the minimum.
 
 A half turn counts as one move, just like a quarter turn.
 
 Select a mode before pressing **Solve**. Searches run in a background worker;
 **Stop** cancels a search or stops playback after the current turn finishes. The
 first short-solution search may take a few extra seconds to prepare its lookup tables.
-Larger cubes can require thousands of turns. Every solution is checked against
-the current cube before playback. Larger-cube solving also works without recorded
-history, using the current sticker positions.
+Larger cubes can require thousands of turns. Every solver uses only the current
+cube state, and every solution is checked against that state before playback.
+Move history is used only for animated navigation; it is never sent to a solver.
 
 Changing sizes resets the cube and turn counter. Size and layer selection are
 locked while turns or searches are in progress; Stop remains available.

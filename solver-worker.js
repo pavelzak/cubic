@@ -56,7 +56,7 @@ self.onmessage = function (event) {
       } else {
         loadLargeSolver();
         if (typeof CubeShortSolver === 'undefined') importScripts('short-solver.js');
-        moves = CubeShortSolver.solve(request.state, CubeModel, loadNearOptimalEngine(progress), progress, request.history);
+        moves = CubeShortSolver.solve(request.state, CubeModel, loadNearOptimalEngine(progress), progress);
       }
     } else {
       throw new Error('Unknown solver mode.');

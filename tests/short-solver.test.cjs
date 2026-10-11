@@ -21,14 +21,13 @@ function random(initial) {
 }
 
 function scramble(size, seed, count = size * 10) {
-  const state = model.solvedState(size), history = [], next = random(seed);
+  const state = model.solvedState(size), next = random(seed);
   for (let i = 0; i < count; i++) {
     const move = { face: model.FACES[Math.floor(next() * 6)], n: 1 + Math.floor(next() * 3),
       depth: Math.floor(next() * size) };
     model.applyMove(state, move.face, move.n, move.depth);
-    history.push(move);
   }
-  return { state, history };
+  return { state };
 }
 
 function assertSolved(state, moves) {
@@ -132,33 +131,34 @@ test('even-cube permutation parity is corrected before sending a reduction to th
   }
 });
 
-test('valid history is an optional verified candidate and never makes the answer longer', () => {
-  for (const size of [4, 7, 10]) {
-    const { state, history } = scramble(size, 817, 30), before = JSON.stringify(history);
-    const moves = solver.solve(state, model, engine, undefined, history);
-    assertSolved(state, moves);
-    assert(moves.length <= history.length);
-    assert.equal(JSON.stringify(history), before);
-  }
+test('legacy extra arguments are never accessed or used to find a solution', () => {
+  const { state } = scramble(4, 817, 30);
+  let accesses = 0;
+  const poison = new Proxy([], {
+    get() { accesses++; throw new Error('Legacy argument must not be read'); },
+    ownKeys() { accesses++; throw new Error('Legacy argument must not be enumerated'); }
+  });
+  assert.equal(solver.solve.length, 4);
+  const expected = solver.solve(state, model, unavailableEngine);
+  const actual = solver.solve(state, model, unavailableEngine, undefined, poison);
+  assertSolved(state, actual);
+  assert.deepEqual(actual, expected);
+  assert.equal(accesses, 0);
 });
 
-test('invalid history and unavailable shorter finishing retain a verified state-based fallback', () => {
-  const { state } = scramble(4, 57), baseline = layerSolver.solve(state, model);
-  for (const history of [undefined, [], [{ face: 'R', n: 1 }], [null], [{ face: 'X', n: 2 }],
-    [{ face: 'R', n: 1, depth: 4 }]]) {
-    const moves = solver.solve(state, model, unavailableEngine, undefined, history);
+test('unavailable shorter finishing retains a verified state-based fallback', () => {
+  for (const size of [4, 7, 10]) {
+    const { state } = scramble(size, 57), baseline = layerSolver.solve(state, model);
+    const moves = solver.solve(state, model, unavailableEngine);
     assertSolved(state, moves);
     assert(moves.length <= baseline.length);
   }
 });
 
-test('a verified history candidate survives a failed baseline solver', () => {
-  const { state, history } = scramble(4, 913, 12), original = layerSolver.solve;
+test('a failed state-based baseline reports its error', () => {
+  const { state } = scramble(4, 913, 12), original = layerSolver.solve;
   layerSolver.solve = () => { throw new Error('Reduction work limit'); };
   try {
-    const moves = solver.solve(state, model, unavailableEngine, undefined, history);
-    assertSolved(state, moves);
-    assert(moves.length <= history.length);
     assert.throws(() => solver.solve(state, model, unavailableEngine), /Reduction work limit/);
   } finally { layerSolver.solve = original; }
 });
