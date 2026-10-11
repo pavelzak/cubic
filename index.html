@@ -125,6 +125,8 @@
   .status{font-size:11.5px; color:var(--muted); letter-spacing:.04em; min-height:16px}
   .status b{color:var(--ink); font-weight:600}
   .legend{font-size:10.5px; color:var(--muted); letter-spacing:.02em; line-height:1.6}
+  .keyboard-help{display:flex; align-items:flex-start; flex-wrap:wrap; gap:8px 16px}
+  .keyboard-help p{flex:1; min-width:220px; margin:0}
   .version{padding:0 18px 12px; text-align:right; color:var(--muted); font-size:10px; letter-spacing:.06em}
 
   @media (max-width:560px){
@@ -175,12 +177,6 @@
             <option value="10">10×10</option>
           </select>
         </label>
-        <label class="solver-control">Layer
-          <select id="layerDepth" aria-label="Layer counted inward from the selected face">
-            <option value="0">Outer</option>
-            <option value="1">Layer 2</option>
-          </select>
-        </label>
         <label class="solver-control">Solver
           <select id="solverMode" aria-describedby="solverNote">
             <option value="layer">Layer by layer</option>
@@ -200,18 +196,26 @@
     </div>
     <div class="keys" id="keys"></div>
     <div class="status" id="status" role="status">Drag a slice to turn it, or use the keys below.</div>
-    <p class="legend">
-      Keyboard: <b>U D L R F B</b> turn the selected layer clockwise; hold <b>shift</b> for counter&#8209;clockwise.
-      Layers count inward from each face: <b>2R</b> turns only the second slice from R.
-      Drag a slice to turn it, or the background to look around. Notation stays fixed when you rotate the view.
-    </p>
+    <div class="legend keyboard-help">
+      <label class="solver-control">Layer
+        <select id="layerDepth" aria-label="Layer counted inward from the selected face" aria-describedby="keyboardHelp">
+          <option value="0">Outer</option>
+          <option value="1">Layer 2</option>
+        </select>
+      </label>
+      <p id="keyboardHelp">
+        Keyboard: <b>U D L R F B</b> turn the selected layer clockwise; hold <b>shift</b> for counter&#8209;clockwise.
+        Layers count inward from each face: <b>2R</b> turns only the second slice from R.
+        Drag a slice to turn it, or the background to look around. Notation stays fixed when you rotate the view.
+      </p>
+    </div>
   </div>
-  <footer class="version" aria-label="Application version">v1.6.0</footer>
+  <footer class="version" aria-label="Application version">v1.6.1</footer>
 </div>
 
 <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
-<script src="cube-model.js?v=1.6.0"></script>
-<script src="solver-worker-client.js?v=1.6.0"></script>
+<script src="cube-model.js?v=1.6.1"></script>
+<script src="solver-worker-client.js?v=1.6.1"></script>
 <script>
 (function () {
 'use strict';
